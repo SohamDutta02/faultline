@@ -1,0 +1,7 @@
+seed: 0
+faults:
+  - type: plausible_wrong
+    rate: 1.0
+    target: get_pricing
+    params:
+      factor: 0.4

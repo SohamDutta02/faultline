@@ -1,0 +1,7 @@
+seed: 0
+faults:
+  - type: rate_limit
+    rate: 0.3
+    target: "*"
+    params:
+      retry_after: 2

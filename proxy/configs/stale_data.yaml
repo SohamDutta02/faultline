@@ -1,0 +1,7 @@
+seed: 0
+faults:
+  - type: stale_data
+    rate: 1.0
+    target: search_inventory
+    params:
+      qty_drift: 0.5

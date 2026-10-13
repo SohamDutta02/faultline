@@ -1,0 +1,37 @@
+# Production-style deployment: the app behind Caddy (HTTPS + password).
+# Copy deploy/.env.example to .env, fill it in, then: docker compose up -d --build
+services:
+  app:
+    build: .
+    image: faultline:latest
+    restart: unless-stopped
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      FAULTLINE_MODEL: ${FAULTLINE_MODEL:-gemini-2.0-flash}
+    volumes:
+      - faultline-data:/data
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER:?set BASIC_AUTH_USER in .env}
+      BASIC_AUTH_HASH: ${BASIC_AUTH_HASH:?set BASIC_AUTH_HASH in .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  faultline-data:
+  caddy-data:
+  caddy-config:

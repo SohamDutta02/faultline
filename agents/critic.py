@@ -46,7 +46,7 @@ def run(task: Task, ctx: AgentContext, max_revisions: int = 2, critic_steps: int
     answer = actor.say(task.prompt, ctx.max_steps)
 
     for round_idx in range(max_revisions):
-        critic = Conversation(ctx, CRITIC_SYSTEM, tool_names=READ_ONLY)
+        critic = Conversation(ctx, CRITIC_SYSTEM, tool_names=READ_ONLY, role="reviewer")
         prompt = REVIEW.format(prompt=task.prompt, transcript=actor.transcript(), answer=answer or "(none)")
         try:
             review = critic.say(prompt, critic_steps)

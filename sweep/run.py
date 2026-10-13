@@ -1,7 +1,9 @@
 import argparse
 import time
 import zlib
+from collections.abc import Callable
 from contextlib import nullcontext
+from dataclasses import dataclass
 
 import httpx
 
@@ -49,6 +51,81 @@ def preflight(toolserver_url: str, proxy_url: str):
         raise SystemExit(f"proxy cannot reach its upstream {status.json()['upstream']} ({exc})")
 
 
+@dataclass
+class Cell:
+    repeat_idx: int
+    fault_config: str
+    task_id: str
+    architecture_id: str
+
+
+def plan(repeats: int, configs: list[str], tasks: list[str], archs: list[str], done: set) -> tuple[int, list[Cell]]:
+    """All cells of a sweep and the ones still to run.
+
+    Repeat-major order: if the run stops early, every cell has the same number
+    of repeats so far instead of whole configs missing."""
+    cells = [
+        Cell(rep, cfg, tid, arch)
+        for rep in range(repeats)
+        for cfg in configs
+        for tid in tasks
+        for arch in archs
+    ]
+    todo = [c for c in cells if (c.task_id, c.architecture_id, c.fault_config, c.repeat_idx) not in done]
+    return len(cells), todo
+
+
+def execute(
+    conn,
+    sweep_id: str,
+    todo: list[Cell],
+    backend,
+    toolserver_url: str,
+    proxy_url: str,
+    max_steps: int = 12,
+    pace: float = 15.0,
+    on_progress: Callable | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> str:
+    """Run cells in order, recording each trial. Returns the sweep's new status:
+    done, paused (model API trouble; resumable), or stopped (should_stop)."""
+    stop = should_stop or (lambda: False)
+    harness_streak = 0
+    for i, cell in enumerate(todo, 1):
+        if stop():
+            return "stopped"
+        arch = ARCHITECTURES[cell.architecture_id]
+        seed = cell_seed(cell.task_id, cell.fault_config, cell.repeat_idx)
+        set_fault_config(proxy_url, cell.fault_config, seed)
+        result = run_trial(
+            BY_ID[cell.task_id], cell.architecture_id, backend if arch.needs_llm else None,
+            max_steps, toolserver_url, proxy_url,
+        )
+        trial_id = store.record(conn, sweep_id, cell.fault_config, cell.repeat_idx, seed, result)
+
+        note = None
+        if result.outcome == "fail_harness":
+            harness_streak += 1
+            if "PerDay" in result.reason:
+                note = "daily quota exhausted"
+            elif harness_streak >= 3:
+                note = "three model API failures in a row"
+        else:
+            harness_streak = 0
+        if on_progress:
+            on_progress(i, len(todo), cell, result, trial_id, note)
+        if note:
+            return "paused"
+
+        if arch.needs_llm and i < len(todo):
+            deadline = time.monotonic() + pace
+            while time.monotonic() < deadline:
+                if stop():
+                    return "stopped"
+                time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
+    return "done"
+
+
 def build_parser():
     ap = argparse.ArgumentParser(description="run every (task, architecture, fault config, repeat) cell")
     ap.add_argument("--label", required=True, help="sweep name; rerun with the same label to resume")
@@ -61,6 +138,16 @@ def build_parser():
     ap.add_argument("--serve", action="store_true", help="run the toolserver and proxy in-process")
     ap.add_argument("--db", default=None, help=f"sqlite path (default {store.DB_PATH})")
     return ap
+
+
+def _print_progress(i, n, cell, result, trial_id, note):
+    flag = "F" if result.fault_fired else " "
+    print(f"[{i}/{n}] {cell.fault_config:16} {cell.task_id:18} {cell.architecture_id:12} "
+          f"r{cell.repeat_idx} {flag} {result.outcome}")
+    if result.outcome == "fail_harness":
+        print(f"  harness: {result.reason[:200]}")
+    if note:
+        print(f"  {note}, stopping.")
 
 
 def main(argv=None):
@@ -86,56 +173,23 @@ def main(argv=None):
         existing = store.find_sweep(conn, args.label)
         if existing and backend and existing["model_id"] not in (model_id, "none"):
             print(f"warning: sweep {args.label} was started with {existing['model_id']}, now running {model_id}")
-        sweep_id = store.start_sweep(conn, args.label, model_id, args.repeats)
-        done = store.done_cells(conn, sweep_id)
+        params = {"archs": args.archs, "configs": args.configs, "tasks": args.tasks, "repeats": args.repeats}
+        sweep_id = store.start_sweep(conn, args.label, model_id, args.repeats, params)
+        total, todo = plan(args.repeats, args.configs, args.tasks, args.archs, store.done_cells(conn, sweep_id))
+        print(f"sweep {args.label}: {len(todo)} trials to run ({total - len(todo)} already done), model {model_id}")
 
-        # repeat-major order: if the run stops early, every cell has the same
-        # number of repeats so far instead of whole configs missing
-        cells = [
-            (rep, cfg, BY_ID[tid], arch)
-            for rep in range(args.repeats)
-            for cfg in args.configs
-            for tid in args.tasks
-            for arch in args.archs
-        ]
-        todo = [c for c in cells if (c[2].id, c[3], c[1], c[0]) not in done]
-        print(f"sweep {args.label}: {len(todo)} trials to run ({len(cells) - len(todo)} already done), model {model_id}")
-
-        status, harness_streak = "done", 0
         try:
-            for i, (rep, cfg, task, arch_id) in enumerate(todo, 1):
-                arch = ARCHITECTURES[arch_id]
-                seed = cell_seed(task.id, cfg, rep)
-                set_fault_config(proxy_url, cfg, seed)
-                result = run_trial(
-                    task, arch_id, backend if arch.needs_llm else None, args.max_steps, toolserver_url, proxy_url
-                )
-                store.record(conn, sweep_id, cfg, rep, seed, result)
-
-                flag = "F" if result.fault_fired else " "
-                print(f"[{i}/{len(todo)}] {cfg:16} {task.id:18} {arch_id:7} r{rep} {flag} {result.outcome}")
-
-                if result.outcome == "fail_harness":
-                    harness_streak += 1
-                    print(f"  harness: {result.reason[:200]}")
-                    if "PerDay" in result.reason:
-                        print("  daily quota exhausted, stopping. Rerun with the same --label to resume.")
-                        status = "paused"
-                        break
-                    if harness_streak >= 3:
-                        print("  three model API failures in a row, stopping. Rerun with the same --label to resume.")
-                        status = "paused"
-                        break
-                else:
-                    harness_streak = 0
-
-                if arch.needs_llm and i < len(todo):
-                    time.sleep(args.pace)
+            status = execute(
+                conn, sweep_id, todo, backend, toolserver_url, proxy_url,
+                args.max_steps, args.pace, on_progress=_print_progress,
+            )
         except KeyboardInterrupt:
-            print("\ninterrupted. Rerun with the same --label to resume.")
+            print("\ninterrupted.")
             status = "paused"
 
         store.finish_sweep(conn, sweep_id, status)
+        if status != "done":
+            print(f"Rerun with --label {args.label} to resume.")
         print(f"{status}. Report: python -m sweep.report --label {args.label}")
 
 

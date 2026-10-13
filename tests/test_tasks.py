@@ -95,3 +95,15 @@ def test_error_outcomes_short_circuit_checks():
 )
 def test_as_number_ignores_identifiers(answer, expected):
     assert as_number(answer) == expected
+
+
+def test_trial_reports_checks_and_world_diff(urls):
+    toolserver_url, proxy_url = urls
+    r = run_trial(BY_ID["t4_cancel_order"], "oracle", toolserver_url=toolserver_url, proxy_url=proxy_url)
+    assert [c["passed"] for c in r.checks] == [True, True, True]
+    diff = r.world_diff
+    assert diff["orders_added"] == []
+    assert [(c["order_id"], c["before"], c["after"]) for c in diff["orders_changed"]] == [
+        ("ORD-0002", "placed", "cancelled")
+    ]
+    assert [(i["sku"], i["after"] - i["before"]) for i in diff["inventory"]] == [("C-02", 4)]

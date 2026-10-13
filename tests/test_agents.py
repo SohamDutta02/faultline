@@ -181,3 +181,8 @@ def test_retrying_client_fixes_transport_faults_for_the_oracle(urls, faults):
         outcomes[arch] = run_trial(BY_ID["t5_tier_quote"], arch, toolserver_url=toolserver_url,
                                    proxy_url=proxy_url).outcome
     assert outcomes == {"oracle": "fail_wrong_answer", "oracle_retry": "pass"}
+
+
+def test_model_turns_are_tagged_by_role(urls):
+    r, _ = trial(urls, "t1_stock_lookup", "critic", [say("11"), say("VERDICT: OK")])
+    assert [e["payload"]["role"] for e in r.events if e["kind"] == "llm"] == ["agent", "reviewer"]

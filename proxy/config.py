@@ -15,12 +15,18 @@ class FaultConfig:
     faults: list[Fault] = field(default_factory=list)
 
 
+def available() -> list[str]:
+    return sorted(p.stem for p in CONFIG_DIR.glob("*.yaml"))
+
+
 def load(name: str) -> FaultConfig:
     path = CONFIG_DIR / f"{name}.yaml"
     if not path.exists():
         raise FileNotFoundError(f"no fault config {name} at {path}")
+    return parse(name, yaml.safe_load(path.read_text()) or {})
 
-    raw = yaml.safe_load(path.read_text()) or {}
+
+def parse(name: str, raw: dict) -> FaultConfig:
     faults = []
     for entry in raw.get("faults", []):
         cls = REGISTRY.get(entry["type"])
@@ -30,6 +36,7 @@ def load(name: str) -> FaultConfig:
             cls(
                 rate=float(entry.get("rate", 1.0)),
                 target=entry.get("target", "*"),
+                max_fires=entry.get("max_fires"),
                 **entry.get("params", {}),
             )
         )

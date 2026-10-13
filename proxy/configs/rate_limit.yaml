@@ -4,4 +4,4 @@ faults:
     rate: 0.3
     target: "*"
     params:
-      retry_after: 2
+      retry_after: 1

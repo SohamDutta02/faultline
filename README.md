@@ -61,6 +61,9 @@ docker build -t faultline .
 docker run -p 8000:8000 -v faultline-data:/data -e GEMINI_API_KEY=... faultline
 ```
 
+To put it online behind HTTPS and a password, see [docs/deploy.md](docs/deploy.md)
+(`compose.yaml` runs the app behind Caddy).
+
 ## Quick start
 
 ```bash

@@ -13,7 +13,11 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 COPY --from=web /web/dist ./web/dist
-RUN mkdir -p /data
+RUN useradd --system --uid 10001 --no-create-home faultline \
+    && mkdir -p /data && chown faultline /data
+USER faultline
 VOLUME /data
 EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4)"
 CMD ["python", "-m", "api", "--host", "0.0.0.0", "--port", "8000", "--db", "/data/faultline.db"]

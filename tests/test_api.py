@@ -24,6 +24,7 @@ def make_client(stack, tmp_path):
     def make(**kw):
         kw.setdefault("llm_available", False)
         kw.setdefault("static_dir", None)
+        kw.setdefault("login", ("admin", ""))  # hermetic: ignore a FAULTLINE_PASSWORD in the environment
         app = create_app(db_path=tmp_path / "api.db", toolserver_url=toolserver_url, proxy_url=proxy_url,
                          serve_stack=False, **kw)
         client = TestClient(app)
@@ -172,3 +173,23 @@ def test_serves_the_built_ui(make_client, tmp_path):
 
 def test_reports_an_unbuilt_ui(client):
     assert client.get("/").status_code == 503
+
+
+def test_optional_login(make_client):
+    client = make_client(login=("demo", "s3cret"))
+    denied = client.get("/api/meta")
+    assert denied.status_code == 401 and denied.headers["www-authenticate"].startswith("Basic")
+    assert client.get("/api/meta", auth=("demo", "wrong")).status_code == 401
+    assert client.get("/api/meta", headers={"authorization": "Basic not-base64!"}).status_code == 401
+    assert client.get("/api/health").status_code == 200  # platform health checks stay open
+    assert client.get("/api/meta", auth=("demo", "s3cret")).status_code == 200
+
+    job = client.post("/api/trials", json={"task_id": "t1_stock_lookup", "architecture_id": "oracle"},
+                      auth=("demo", "s3cret")).json()
+    with client.stream("GET", f"/api/jobs/{job['id']}/events", auth=("demo", "s3cret")) as r:
+        assert r.status_code == 200
+        assert any('"type": "end"' in line for line in r.iter_lines())
+
+
+def test_login_is_off_without_a_password(make_client):
+    assert make_client(login=("demo", "")).get("/api/meta").status_code == 200

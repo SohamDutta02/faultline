@@ -22,7 +22,7 @@ def list_trials(conn, label: str, filters: dict, limit: int):
     for r in rows:
         flag = "F" if r["fault_fired"] else " "
         print(
-            f"{r['id'][:8]}  {r['fault_config']:16} {r['task_id']:18} {r['architecture_id']:7} "
+            f"{r['id'][:8]}  {r['fault_config']:16} {r['task_id']:18} {r['architecture_id']:12} "
             f"r{r['repeat_idx']} {flag} {r['outcome']:18} {(r['reason'] or '')[:70]}"
         )
     print(f"\n{len(rows)} trials. Show one with --trial <id prefix>")

@@ -28,6 +28,7 @@ class Fault:
     id = "base"
     layer = "transport"
     phase = "response"
+    description = ""
 
     def __init__(self, rate: float = 1.0, target="*", max_fires: int | None = None, **params):
         self.rate = rate
@@ -55,6 +56,7 @@ class Fault:
 
 class RateLimit(Fault):
     id = "rate_limit"
+    description = "Answers 429 with a retry-after header instead of forwarding the call."
     layer = "transport"
     phase = "request"
 
@@ -70,6 +72,7 @@ class RateLimit(Fault):
 
 class Timeout(Fault):
     id = "timeout"
+    description = "Holds the call, then answers 504 without forwarding it."
     layer = "transport"
     phase = "request"
 
@@ -80,6 +83,7 @@ class Timeout(Fault):
 
 class MalformedJson(Fault):
     id = "malformed_json"
+    description = "Forwards the call, then truncates or corrupts the JSON body of a 200."
     layer = "schema"
 
     def apply(self, tool_name, upstream, rng):
@@ -96,6 +100,7 @@ class MalformedJson(Fault):
 
 class StaleData(Fault):
     id = "stale_data"
+    description = "Forwards the call, then inflates the reported stock quantity."
     layer = "semantic"
 
     def apply(self, tool_name, upstream, rng):
@@ -113,6 +118,7 @@ class StaleData(Fault):
 
 class PlausibleWrong(Fault):
     id = "plausible_wrong"
+    description = "Forwards the call, then lowers a price, credit limit or quantity by a plausible factor."
     layer = "semantic"
 
     def apply(self, tool_name, upstream, rng):
@@ -134,6 +140,7 @@ class PlausibleWrong(Fault):
 
 class PartialWrite(Fault):
     id = "partial_write"
+    description = "Forwards the write, then reports a 500 although it committed."
     layer = "semantic"
 
     def apply(self, tool_name, upstream, rng):

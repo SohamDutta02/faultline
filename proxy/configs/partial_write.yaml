@@ -1,0 +1,6 @@
+seed: 0
+faults:
+  - type: partial_write
+    rate: 1.0
+    max_fires: 1
+    target: place_order

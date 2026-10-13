@@ -2,7 +2,6 @@ import json
 import random
 import time
 from dataclasses import dataclass
-from typing import Any
 
 import httpx
 
@@ -17,31 +16,47 @@ class Injection:
 
 
 class Fault:
+    """A fault the proxy can inject into tool traffic.
+
+    phase decides when it acts:
+      "request"  -- before forwarding; upstream is never called, so a write
+                    rejected this way did not happen (rate limits, timeouts).
+      "response" -- after forwarding; upstream already executed the call and
+                    the fault rewrites what the agent sees.
+    """
+
     id = "base"
     layer = "transport"
+    phase = "response"
 
-    def __init__(self, rate: float = 1.0, target: str = "*", **params):
+    def __init__(self, rate: float = 1.0, target="*", max_fires: int | None = None, **params):
         self.rate = rate
-        self.target = target
+        self.targets = [target] if isinstance(target, str) else list(target)
+        self.max_fires = max_fires
+        self.fires = 0
         self.params = params
 
     def matches(self, tool_name: str) -> bool:
-        if self.target == "*":
-            return True
-        if self.target.endswith("*"):
-            return tool_name.startswith(self.target[:-1])
-        return tool_name == self.target
+        for t in self.targets:
+            if t == "*" or t == tool_name:
+                return True
+            if t.endswith("*") and tool_name.startswith(t[:-1]):
+                return True
+        return False
 
     def should_fire(self, rng: random.Random) -> bool:
+        if self.max_fires is not None and self.fires >= self.max_fires:
+            return False
         return rng.random() < self.rate
 
-    def apply(self, tool_name: str, upstream: httpx.Response, rng: random.Random) -> Injection:
+    def apply(self, tool_name: str, upstream: httpx.Response | None, rng: random.Random) -> Injection:
         raise NotImplementedError
 
 
 class RateLimit(Fault):
     id = "rate_limit"
     layer = "transport"
+    phase = "request"
 
     def apply(self, tool_name, upstream, rng):
         return Injection(
@@ -56,6 +71,7 @@ class RateLimit(Fault):
 class Timeout(Fault):
     id = "timeout"
     layer = "transport"
+    phase = "request"
 
     def apply(self, tool_name, upstream, rng):
         time.sleep(self.params.get("delay_s", 30))
@@ -87,12 +103,11 @@ class StaleData(Fault):
             data = upstream.json()
         except Exception:
             return Injection(False)
-        if not isinstance(data, dict):
+        if not isinstance(data, dict) or not isinstance(data.get("qty"), int):
             return Injection(False)
 
         drift = self.params.get("qty_drift", 0.5)
-        if "qty" in data and isinstance(data["qty"], int):
-            data["qty"] = int(data["qty"] * (1 + drift)) + 20
+        data["qty"] = int(data["qty"] * (1 + drift)) + 20
         return Injection(True, self.id, 200, json.dumps(data), {})
 
 

@@ -13,11 +13,13 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 COPY --from=web /web/dist ./web/dist
-RUN useradd --system --uid 10001 --no-create-home faultline \
+# uid 1000: some container hosts (e.g. Hugging Face Spaces) run images as 1000
+RUN useradd --uid 1000 --no-create-home faultline \
     && mkdir -p /data && chown faultline /data
 USER faultline
 VOLUME /data
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4)"
-CMD ["python", "-m", "api", "--host", "0.0.0.0", "--port", "8000", "--db", "/data/faultline.db"]
+    CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/api/health' % os.getenv('PORT', '8000'), timeout=4)"
+# listens on $PORT when the host sets it (most platforms do), else 8000
+CMD ["python", "-m", "api", "--host", "0.0.0.0", "--db", "/data/faultline.db"]

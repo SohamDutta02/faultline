@@ -14,3 +14,8 @@ MODEL = os.getenv("FAULTLINE_MODEL", "gemini-2.0-flash")
 
 def gemini_key() -> str:
     return os.getenv("GEMINI_API_KEY", "").strip()
+
+
+def app_login() -> tuple[str, str]:
+    """Optional login for the web app (empty password = open), for hosts with no proxy in front."""
+    return os.getenv("FAULTLINE_USER", "admin"), os.getenv("FAULTLINE_PASSWORD", "")

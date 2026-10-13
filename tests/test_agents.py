@@ -155,3 +155,29 @@ def test_oracle_gives_up_cleanly_on_faults(urls, faults):
     r = run_trial(BY_ID["t3_budget_order"], "oracle", toolserver_url=toolserver_url, proxy_url=proxy_url)
     assert r.outcome == "fail_wrong_answer"
     assert r.answer.startswith("gave up: get_customer failed")
+
+
+def test_events_stream_to_a_listener(urls):
+    toolserver_url, proxy_url = urls
+    seen = []
+    r = run_trial(BY_ID["t2_simple_order"], "oracle", toolserver_url=toolserver_url, proxy_url=proxy_url,
+                  on_event=seen.append)
+    assert [e.kind for e in seen] == [e["kind"] for e in r.events] == ["tool_call", "tool_result"]
+
+
+def test_injected_fault_is_named_in_the_event(urls, faults):
+    toolserver_url, proxy_url = urls
+    faults([{"type": "stale_data", "target": "search_inventory"}])
+    r = run_trial(BY_ID["t1_stock_lookup"], "oracle", toolserver_url=toolserver_url, proxy_url=proxy_url)
+    result = [e for e in r.events if e["kind"] == "tool_result"][0]
+    assert result["fault_injected"] and result["payload"]["fault"] == "stale_data"
+
+
+def test_retrying_client_fixes_transport_faults_for_the_oracle(urls, faults):
+    toolserver_url, proxy_url = urls
+    outcomes = {}
+    for arch in ("oracle", "oracle_retry"):
+        faults([{"type": "rate_limit", "max_fires": 1, "params": {"retry_after": 0}}])
+        outcomes[arch] = run_trial(BY_ID["t5_tier_quote"], arch, toolserver_url=toolserver_url,
+                                   proxy_url=proxy_url).outcome
+    assert outcomes == {"oracle": "fail_wrong_answer", "oracle_retry": "pass"}

@@ -105,7 +105,7 @@ class Event:
 class Response:
     body: str
     status: int | None
-    faulted: bool = False
+    fault: str | None = None
     retry_after: float | None = None
 
     @property
@@ -123,16 +123,20 @@ def _seconds(value: str | None) -> float | None:
 class Toolbox:
     """Executes the agent's tool calls over HTTP and records an event log."""
 
-    def __init__(self, base_url: str | None = None, timeout: float = 20.0):
+    def __init__(self, base_url: str | None = None, timeout: float = 20.0, on_event=None):
         self.base_url = base_url or settings.PROXY_URL
         self.client = httpx.Client(timeout=timeout)
         self.events: list[Event] = []
+        self.on_event = on_event
         self.call_count = 0
         self.error_count = 0
         self.retries = 0
 
     def log(self, kind: str, **kw):
-        self.events.append(Event(step_idx=len(self.events), kind=kind, **kw))
+        event = Event(step_idx=len(self.events), kind=kind, **kw)
+        self.events.append(event)
+        if self.on_event is not None:
+            self.on_event(event)
 
     def _request(self, spec: dict, args: dict) -> Response:
         url = self.base_url + spec["path"]
@@ -146,7 +150,7 @@ class Toolbox:
         return Response(
             r.text,
             r.status_code,
-            faulted="x-faultline-injected" in r.headers,
+            fault=r.headers.get("x-faultline-injected"),
             retry_after=_seconds(r.headers.get("retry-after")),
         )
 
@@ -156,9 +160,9 @@ class Toolbox:
         self.log(
             "tool_result",
             tool_name=name,
-            fault_injected=resp.faulted,
+            fault_injected=resp.fault is not None,
             latency_ms=int((time.perf_counter() - start) * 1000),
-            payload={"body": resp.body[:2000], "status": resp.status, "error": resp.is_error},
+            payload={"body": resp.body[:2000], "status": resp.status, "error": resp.is_error, "fault": resp.fault},
         )
         return resp
 

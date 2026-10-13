@@ -1,4 +1,7 @@
+import re
 from typing import Any
+
+from toolserver.fixtures import TIER_MULTIPLIER
 
 from .spec import CheckResult, Outcome, Task, Verdict
 
@@ -6,8 +9,8 @@ from .spec import CheckResult, Outcome, Task, Verdict
 def verify(task: Task, before: dict, after: dict, answer: Any, error: str | None = None) -> Verdict:
     if error == "loop":
         return Verdict(Outcome.FAIL_LOOP, [], "step budget exhausted")
-    if error == "harness":
-        return Verdict(Outcome.FAIL_HARNESS, [], "harness failure")
+    if error and error.startswith("harness"):
+        return Verdict(Outcome.FAIL_HARNESS, [], error)
     if error:
         return Verdict(Outcome.FAIL_CRASH, [], error)
     if answer is None:
@@ -26,6 +29,11 @@ def verify(task: Task, before: dict, after: dict, answer: Any, error: str | None
 
 def qty_of(state: dict, sku: str) -> int:
     return state["inventory"][sku]["qty"]
+
+
+def unit_price(state: dict, sku: str, customer_id: str) -> float:
+    tier = state["customers"][customer_id]["tier"]
+    return round(state["inventory"][sku]["base_price"] * TIER_MULTIPLIER[tier], 2)
 
 
 def active_orders(state: dict, customer_id: str | None = None) -> list[dict]:
@@ -47,8 +55,8 @@ def as_number(answer: Any) -> float | None:
     if isinstance(answer, (int, float)):
         return float(answer)
     if isinstance(answer, str):
-        import re
-        m = re.search(r"-?\d+(?:\.\d+)?", answer.replace(",", ""))
+        # skip digits that belong to identifiers like A-22 or CUST-102
+        m = re.search(r"(?<![\w-])-?\d+(?:\.\d+)?(?![\w-])", answer.replace(",", ""))
         if m:
             return float(m.group())
     return None

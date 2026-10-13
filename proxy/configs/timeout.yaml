@@ -1,0 +1,7 @@
+seed: 0
+faults:
+  - type: timeout
+    rate: 0.25
+    target: "*"
+    params:
+      delay_s: 2

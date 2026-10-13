@@ -52,6 +52,7 @@ create index if not exists idx_event_trial on trial_event(trial_id);
 
 # columns added after the first sweeps were recorded; old databases get them on connect
 MIGRATIONS = {
+    "sweep": {"params": "text"},
     "trial": {
         "tool_errors": "integer",
         "llm_calls": "integer",
@@ -65,6 +66,7 @@ MIGRATIONS = {
 def connect(path: str | Path | None = None, check_same_thread: bool = True):
     conn = sqlite3.connect(path or DB_PATH, check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
+    conn.execute("pragma journal_mode=wal")  # readers don't block the sweep writer
     conn.executescript(SCHEMA)
     for table, cols in MIGRATIONS.items():
         have = {r["name"] for r in conn.execute(f"pragma table_info({table})")}
@@ -83,16 +85,20 @@ def find_sweep(conn, label: str):
     return conn.execute("select * from sweep where label = ?", (label,)).fetchone()
 
 
-def start_sweep(conn, label: str, model_id: str, repeats: int) -> str:
+def start_sweep(conn, label: str, model_id: str, repeats: int, params: dict | None = None) -> str:
+    """Create a sweep, or reopen it to resume. params records the planned matrix
+    (archs, configs, tasks, repeats) so progress can be shown against it."""
     row = find_sweep(conn, label)
     if row:
         conn.execute("update sweep set status = ? where id = ?", ("running", row["id"]))
+        if params is not None:
+            conn.execute("update sweep set params = ? where id = ?", (json.dumps(params), row["id"]))
         conn.commit()
         return row["id"]
     sweep_id = str(uuid.uuid4())
     conn.execute(
-        "insert into sweep (id, label, model_id, repeats_per_cell, started_at, status) values (?,?,?,?,?,?)",
-        (sweep_id, label, model_id, repeats, now(), "running"),
+        "insert into sweep (id, label, model_id, repeats_per_cell, started_at, status, params) values (?,?,?,?,?,?,?)",
+        (sweep_id, label, model_id, repeats, now(), "running", json.dumps(params) if params else None),
     )
     conn.commit()
     return sweep_id
@@ -174,7 +180,12 @@ def list_sweeps(conn) -> list[dict]:
            from sweep s left join trial t on t.sweep_id = s.id
            group by s.id order by s.started_at desc"""
     ).fetchall()
-    return [dict(r) for r in rows]
+    return [_with_params(dict(r)) for r in rows]
+
+
+def _with_params(sweep: dict) -> dict:
+    sweep["params"] = json.loads(sweep["params"]) if sweep.get("params") else None
+    return sweep
 
 
 def list_trials(conn, sweep_id: str, filters: dict | None = None, limit: int = 500) -> list[dict]:

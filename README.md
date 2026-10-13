@@ -22,6 +22,45 @@ work, snapshots it again, and runs task-specific checks against both snapshots.
                    verifier ◀──────── before / after snapshots ──┘
 ```
 
+![Playground: a retrying client riding out timeouts on reads, then losing the write](docs/img/playground.png)
+
+## Web app
+
+`python -m api` serves everything on http://127.0.0.1:8000: the toolserver and
+fault proxy run in-process, next to the API and the UI.
+
+- **Playground**: pick a task, an architecture and a fault config, run one
+  trial and watch it stream. Every tool call shows its status, latency, the
+  fault the proxy injected and any client retries; the verdict panel shows the
+  checks, the final answer, the cost and a diff of the world.
+- **Sweeps**: launch, follow and stop sweeps, then read them as a pass-rate
+  heatmap by fault config and architecture. Select a cell to list its trials,
+  and open any trial to replay its trace.
+- **Catalog**: the trial pipeline, fault configs, tasks and architectures.
+
+The scripted architectures work without an API key, so the whole app is
+usable offline; the model-driven ones unlock once `GEMINI_API_KEY` is set.
+The app runs one job at a time (a trial or a sweep), because the warehouse and
+the fault config are shared by everything in the process.
+
+| | |
+|---|---|
+| ![Sweep results](docs/img/sweep.png) | ![Trial replay, dark theme](docs/img/trial-dark.png) |
+
+```bash
+# build the UI once (Node 20+), then serve
+cd web && npm ci && npm run build && cd ..
+python -m api                        # --port, --host, --db
+
+# or work on the UI with hot reload: API on :8000, vite on :5173
+python -m api
+cd web && npm run dev
+
+# or run it all in a container
+docker build -t faultline .
+docker run -p 8000:8000 -v faultline-data:/data -e GEMINI_API_KEY=... faultline
+```
+
 ## Quick start
 
 ```bash
@@ -31,8 +70,8 @@ pip install -r requirements.txt -r requirements-dev.txt
 
 python -m pytest                     # offline test suite, no API key needed
 
-# control sweep: the scripted oracle, no model involved
-python -m sweep.run --label control --archs oracle --serve
+# control sweep: the scripted architectures, no model involved
+python -m sweep.run --label control --archs oracle oracle_retry --serve
 python -m sweep.report --label control --by-task
 ```
 
@@ -116,6 +155,7 @@ of `POST /_proxy/config`.
 | `retry` | yes | `single` on a client that retries reads on 429/5xx/timeouts/unparseable bodies and writes only on 429 |
 | `critic` | yes | `single`, then a read-only reviewer re-checks the work and can send it back (up to two revisions) |
 | `oracle` | no | scripted per-task policy with no retries; the control column, and lets the pipeline run without a key |
+| `oracle_retry` | no | the oracle on the retrying client: what client retries alone buy, with no model involved |
 
 ## Outcomes
 
@@ -146,23 +186,27 @@ injected faults (`F`), reviewer verdicts.
 
 ## Control results
 
-The oracle sweep (`--archs oracle`, 3 repeats) is deterministic. It shows what
-each fault does to a client that knows exactly what to do but never retries or
-cross-checks:
+The control sweep (`--archs oracle oracle_retry`, 3 repeats, 18 trials per
+cell) is deterministic. It shows what each fault does to a client that knows
+exactly what to do, with and without client retries:
 
-| task | none | rate_limit | timeout | malformed_json | stale_data | plausible_wrong | partial_write |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| t1_stock_lookup | 100% | 67% | 100% | 67% | 0% | 100% | 100% |
-| t2_simple_order | 100% | 100% | 67% | 100% | 100% | 100% | 100% |
-| t3_budget_order | 100% | 0% | 0% | 0% | 100% | 0% | 100% |
-| t4_cancel_order | 100% | 67% | 0% | 100% | 100% | 100% | 100% |
-| t5_tier_quote | 100% | 67% | 33% | 67% | 100% | 0% | 100% |
-| t6_stock_fallback | 100% | 0% | 67% | 67% | 0% | 100% | 100% |
+| config | oracle | oracle_retry |
+|---|---:|---:|
+| none | 100% | 100% |
+| rate_limit | 50% | 94% |
+| timeout | 44% | 72% |
+| malformed_json | 67% | 100% |
+| stale_data | 67% | 67% |
+| plausible_wrong | 67% | 67% |
+| partial_write | 100% | 100% |
 
-Transport and schema faults hurt in proportion to how many calls a task makes,
-which is what client retries should fix. Semantic faults hit only the tasks
-whose answer depends on the corrupted field. Partial writes never hurt a client
-that doesn't retry: that failure mode belongs to agents that do.
+Retries recover rate limits and corrupted bodies almost entirely. They recover
+timeouts only on reads: a write that timed out might have committed, so the
+retrying client hands it back instead of risking a duplicate, and those trials
+still fail. Semantic faults are untouched, since a stale or wrong value
+re-reads the same way. Partial writes never hurt a client that doesn't retry
+blindly: that failure mode belongs to agents that do, which is what the model
+architectures are measured on.
 
 ## Extending
 
@@ -173,7 +217,8 @@ that doesn't retry: that failure mode belongs to agents that do.
   state), and add an oracle solver in `agents/oracle.py`. The test suite runs
   the oracle against every catalog task.
 - **Architecture**: write `run(task, ctx) -> answer` using
-  `agents.loop.Conversation`, and register it in `agents/registry.py`.
+  `agents.loop.Conversation`, and register it in `agents/registry.py`. It
+  shows up in the CLI, the API and the UI.
 - **Model provider**: implement the `agents.llm.Backend` protocol (one
   `complete(messages, tools, system) -> Reply` method).
 
@@ -186,6 +231,8 @@ tasks/        task catalog, checks, verifier
 agents/       LLM backend, toolboxes, agent loop, architectures, oracle
 runner/       single-trial runner, in-process server stack
 sweep/        sweep runner, SQLite store, report, trial inspector
+api/          FastAPI app: catalog, live trial streams (SSE), sweep control
+web/          React + TypeScript UI (Vite)
 tests/        offline pytest suite
 settings.py   URLs, model, API key (from .env)
 ```

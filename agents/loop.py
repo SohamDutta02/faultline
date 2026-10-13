@@ -20,13 +20,14 @@ class AgentContext:
     tokens: int = 0
     llm_calls: int = 0
 
-    def complete(self, messages: list[dict], tools: list[dict], system: str) -> Reply:
+    def complete(self, messages: list[dict], tools: list[dict], system: str, role: str = "agent") -> Reply:
         reply = self.backend.complete(messages, tools, system)
         self.llm_calls += 1
         self.tokens += reply.tokens
         self.toolbox.log(
             "llm",
             payload={
+                "role": role,
                 "text": reply.text[:1000],
                 "calls": [{"name": c.name, "args": c.args} for c in reply.calls],
                 "tokens": reply.tokens,
@@ -39,9 +40,10 @@ class AgentContext:
 class Conversation:
     """One model's view of the task: a system prompt, a tool set, a history."""
 
-    def __init__(self, ctx: AgentContext, system: str, tool_names: list[str] | None = None):
+    def __init__(self, ctx: AgentContext, system: str, tool_names: list[str] | None = None, role: str = "agent"):
         self.ctx = ctx
         self.system = system
+        self.role = role
         self.tool_names = tool_names
         self.tools = llm_tools(tool_names)
         self.messages: list[dict] = []
@@ -50,7 +52,7 @@ class Conversation:
         """Send a user message, then execute tool calls until the model answers in text."""
         self.messages.append({"role": "user", "text": text})
         for _ in range(max_steps):
-            reply = self.ctx.complete(self.messages, self.tools, self.system)
+            reply = self.ctx.complete(self.messages, self.tools, self.system, self.role)
             if not reply.calls:
                 if reply.text:
                     self.messages.append({"role": "assistant", "reply": reply})

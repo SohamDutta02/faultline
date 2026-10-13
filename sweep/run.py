@@ -173,7 +173,8 @@ def main(argv=None):
         existing = store.find_sweep(conn, args.label)
         if existing and backend and existing["model_id"] not in (model_id, "none"):
             print(f"warning: sweep {args.label} was started with {existing['model_id']}, now running {model_id}")
-        sweep_id = store.start_sweep(conn, args.label, model_id, args.repeats)
+        params = {"archs": args.archs, "configs": args.configs, "tasks": args.tasks, "repeats": args.repeats}
+        sweep_id = store.start_sweep(conn, args.label, model_id, args.repeats, params)
         total, todo = plan(args.repeats, args.configs, args.tasks, args.archs, store.done_cells(conn, sweep_id))
         print(f"sweep {args.label}: {len(todo)} trials to run ({total - len(todo)} already done), model {model_id}")
 

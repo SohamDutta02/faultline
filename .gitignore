@@ -5,3 +5,4 @@ __pycache__/
 *.db
 faultline.db
 *.db-journal
+.pytest_cache/

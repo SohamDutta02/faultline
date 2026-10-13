@@ -52,12 +52,18 @@ create index if not exists idx_event_trial on trial_event(trial_id);
 
 # columns added after the first sweeps were recorded; old databases get them on connect
 MIGRATIONS = {
-    "trial": {"tool_errors": "integer", "llm_calls": "integer", "duration_ms": "integer"},
+    "trial": {
+        "tool_errors": "integer",
+        "llm_calls": "integer",
+        "duration_ms": "integer",
+        "checks": "text",
+        "world_diff": "text",
+    },
 }
 
 
-def connect(path: str | Path | None = None):
-    conn = sqlite3.connect(path or DB_PATH)
+def connect(path: str | Path | None = None, check_same_thread: bool = True):
+    conn = sqlite3.connect(path or DB_PATH, check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     for table, cols in MIGRATIONS.items():
@@ -123,13 +129,14 @@ def record(conn, sweep_id: str, fault_config: str, repeat_idx: int, seed: int, r
         """insert into trial
            (id, sweep_id, task_id, architecture_id, fault_config, repeat_idx, seed,
             outcome, reason, fault_fired, tool_calls, tool_errors, retries, llm_calls,
-            tokens_used, duration_ms, answer, created_at)
-           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            tokens_used, duration_ms, answer, checks, world_diff, created_at)
+           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             trial_id, sweep_id, result.task_id, result.architecture_id, fault_config,
             repeat_idx, seed, result.outcome, result.reason, int(result.fault_fired),
             result.tool_calls, result.tool_errors, result.retries, result.llm_calls,
-            result.tokens_used, result.duration_ms, result.answer, now(),
+            result.tokens_used, result.duration_ms, result.answer,
+            json.dumps(result.checks), json.dumps(result.world_diff), now(),
         ),
     )
     conn.executemany(
@@ -147,3 +154,72 @@ def record(conn, sweep_id: str, fault_config: str, repeat_idx: int, seed: int, r
     )
     conn.commit()
     return trial_id
+
+
+def next_repeat(conn, sweep_id: str, task_id: str, architecture_id: str, fault_config: str) -> int:
+    row = conn.execute(
+        """select max(repeat_idx) as m from trial
+           where sweep_id = ? and task_id = ? and architecture_id = ? and fault_config = ?""",
+        (sweep_id, task_id, architecture_id, fault_config),
+    ).fetchone()
+    return 0 if row["m"] is None else row["m"] + 1
+
+
+def list_sweeps(conn) -> list[dict]:
+    rows = conn.execute(
+        """select s.*, count(t.id) as trials,
+                  sum(t.outcome = 'pass') as passes,
+                  sum(t.outcome = 'fail_harness') as harness,
+                  max(t.created_at) as last_trial_at
+           from sweep s left join trial t on t.sweep_id = s.id
+           group by s.id order by s.started_at desc"""
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_trials(conn, sweep_id: str, filters: dict | None = None, limit: int = 500) -> list[dict]:
+    where, params = ["sweep_id = ?"], [sweep_id]
+    for col in ("fault_config", "architecture_id", "task_id", "outcome"):
+        val = (filters or {}).get(col)
+        if val:
+            where.append(f"{col} = ?")
+            params.append(val)
+    rows = conn.execute(
+        f"""select id, task_id, architecture_id, fault_config, repeat_idx, seed, outcome, reason,
+                   fault_fired, tool_calls, tool_errors, retries, llm_calls, tokens_used,
+                   duration_ms, answer, created_at
+            from trial where {' and '.join(where)}
+            order by created_at desc limit ?""",
+        params + [limit],
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_trial(conn, trial_id: str) -> dict | None:
+    row = conn.execute("select * from trial where id = ?", (trial_id,)).fetchone()
+    if row is None:
+        return None
+    trial = dict(row)
+    trial["checks"] = json.loads(trial["checks"]) if trial.get("checks") else []
+    trial["world_diff"] = json.loads(trial["world_diff"]) if trial.get("world_diff") else None
+    sweep = conn.execute("select label from sweep where id = ?", (trial["sweep_id"],)).fetchone()
+    trial["sweep_label"] = sweep["label"] if sweep else None
+    events = conn.execute(
+        "select step_idx, kind, tool_name, fault_injected, latency_ms, payload from trial_event "
+        "where trial_id = ? order by step_idx",
+        (trial_id,),
+    ).fetchall()
+    trial["events"] = [
+        {**dict(e), "fault_injected": bool(e["fault_injected"]), "payload": _load(e["payload"])}
+        for e in events
+    ]
+    return trial
+
+
+def _load(payload: str | None):
+    if not payload:
+        return {}
+    try:
+        return json.loads(payload)
+    except ValueError:  # truncated on write
+        return {"truncated": payload}

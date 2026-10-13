@@ -24,5 +24,6 @@ ARCHITECTURES = {
         Architecture("retry", single.run, ResilientToolbox, True, "single + client-side retries for transport and schema faults"),
         Architecture("critic", critic.run, Toolbox, True, "single + read-only reviewer that can send the work back"),
         Architecture("oracle", oracle.run, Toolbox, False, "scripted per-task policy, no LLM (control)"),
+        Architecture("oracle_retry", oracle.run, ResilientToolbox, False, "oracle on the retrying client, no LLM (control)"),
     ]
 }

@@ -1,7 +1,8 @@
 import argparse
 import time
 import traceback
-from dataclasses import asdict, dataclass
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field
 
 import httpx
 
@@ -11,7 +12,7 @@ from agents.loop import AgentContext, StepBudgetExceeded
 from agents.registry import ARCHITECTURES
 from tasks.catalog import BY_ID, CATALOG
 from tasks.spec import Task
-from tasks.verify import verify
+from tasks.verify import verify, world_diff
 
 
 @dataclass
@@ -29,6 +30,8 @@ class TrialResult:
     fault_fired: bool
     answer: str | None
     events: list
+    checks: list = field(default_factory=list)
+    world_diff: dict = field(default_factory=dict)
 
 
 def prepare_world(admin: httpx.Client, task: Task) -> dict:
@@ -45,10 +48,11 @@ def run_trial(
     max_steps: int = 12,
     toolserver_url: str | None = None,
     proxy_url: str | None = None,
+    on_event: Callable | None = None,
 ) -> TrialResult:
     """Reset the world, let one architecture attempt one task through the proxy,
     and grade the world it leaves behind. The fault config is whatever the proxy
-    currently has active."""
+    currently has active. on_event receives each Event as it is logged."""
     arch = ARCHITECTURES[architecture_id]
     if arch.needs_llm and backend is None:
         raise ValueError(f"architecture {architecture_id} needs an LLM backend")
@@ -56,7 +60,7 @@ def run_trial(
     with httpx.Client(base_url=toolserver_url or settings.TOOLSERVER_URL, timeout=15) as admin:
         before = prepare_world(admin, task)
 
-        ctx = AgentContext(arch.toolbox(proxy_url or settings.PROXY_URL), backend, max_steps)
+        ctx = AgentContext(arch.toolbox(proxy_url or settings.PROXY_URL, on_event=on_event), backend, max_steps)
         answer, error = None, None
         start = time.perf_counter()
         try:
@@ -90,6 +94,8 @@ def run_trial(
         fault_fired=any(e.fault_injected for e in tb.events),
         answer=answer,
         events=[asdict(e) for e in tb.events],
+        checks=[asdict(c) for c in verdict.checks],
+        world_diff=world_diff(before, after),
     )
 
 

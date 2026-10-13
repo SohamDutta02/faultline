@@ -74,3 +74,25 @@ def test_report_warns_when_faults_never_fire(tmp_path):
     store.record(conn, sid, "none", 0, 1, result())
     store.record(conn, sid, "rate_limit", 0, 1, result())
     assert "rate_limit never fired" in report.build(conn, "w")
+
+
+def test_executor_honours_stop_and_reports_progress(urls, tmp_path):
+    toolserver_url, proxy_url = urls
+    conn = store.connect(tmp_path / "x.db")
+    sid = store.start_sweep(conn, "x", "none", 1)
+    total, todo = run.plan(1, ["none"], ["t1_stock_lookup", "t2_simple_order"], ["oracle"], set())
+    seen = []
+    status = run.execute(
+        conn, sid, todo, None, toolserver_url, proxy_url,
+        on_progress=lambda i, n, cell, result, trial_id, note: seen.append((i, n, cell.task_id, result.outcome)),
+        should_stop=lambda: len(seen) >= 1,
+    )
+    assert (total, status) == (2, "stopped")
+    assert seen == [(1, 2, "t1_stock_lookup", "pass")]
+
+    summary = report.summarize(conn, "x")
+    assert summary["cells"] == [{"config": "none", "arch": "oracle", "passes": 1, "n": 1}]
+    trial = store.get_trial(conn, store.list_trials(conn, sid)[0]["id"])
+    assert trial["sweep_label"] == "x" and trial["checks"][0]["passed"]
+    assert [e["kind"] for e in trial["events"]] == ["tool_call", "tool_result"]
+    assert store.next_repeat(conn, sid, "t1_stock_lookup", "oracle", "none") == 1

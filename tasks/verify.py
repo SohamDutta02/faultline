@@ -60,3 +60,20 @@ def as_number(answer: Any) -> float | None:
         if m:
             return float(m.group())
     return None
+
+
+def world_diff(before: dict, after: dict) -> dict:
+    """What the trial changed: stock levels, new orders, order status changes."""
+    inventory = [
+        {"sku": sku, "name": row["name"], "before": row["qty"], "after": after["inventory"][sku]["qty"]}
+        for sku, row in before["inventory"].items()
+        if row["qty"] != after["inventory"][sku]["qty"]
+    ]
+    added = [o for oid, o in after["orders"].items() if oid not in before["orders"]]
+    changed = [
+        {**{k: o[k] for k in ("order_id", "customer_id", "sku", "qty")},
+         "before": o["status"], "after": after["orders"][oid]["status"]}
+        for oid, o in before["orders"].items()
+        if oid in after["orders"] and after["orders"][oid]["status"] != o["status"]
+    ]
+    return {"inventory": inventory, "orders_added": added, "orders_changed": changed}

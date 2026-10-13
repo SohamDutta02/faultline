@@ -38,6 +38,8 @@ class Task:
     seed: int
     min_tool_calls: int
     checks: list[Callable[[dict, dict, Any], CheckResult]]
+    # orders placed directly on the toolserver before the agent starts
+    setup: list[dict] = field(default_factory=list)
 
 
 def check(name: str):

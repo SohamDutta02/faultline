@@ -1,11 +1,10 @@
-import os
+import json
 import time
 from dataclasses import dataclass, field
-from typing import Any
 
 import httpx
 
-DEFAULT_BASE = os.getenv("TOOLSERVER_URL", "http://127.0.0.1:8100")
+import settings
 
 SPECS = [
     {
@@ -81,12 +80,14 @@ SPECS = [
 ]
 
 BY_NAME = {s["name"]: s for s in SPECS}
+READ_ONLY = [s["name"] for s in SPECS if s["method"] == "GET"]
 
 
-def llm_tools() -> list[dict]:
+def llm_tools(names: list[str] | None = None) -> list[dict]:
     return [
         {"name": s["name"], "description": s["description"], "input_schema": s["input_schema"]}
         for s in SPECS
+        if names is None or s["name"] in names
     ]
 
 
@@ -100,46 +101,125 @@ class Event:
     payload: dict = field(default_factory=dict)
 
 
+@dataclass
+class Response:
+    body: str
+    status: int | None
+    faulted: bool = False
+    retry_after: float | None = None
+
+    @property
+    def is_error(self) -> bool:
+        return self.status is None or self.status >= 400
+
+
+def _seconds(value: str | None) -> float | None:
+    try:
+        return float(value) if value else None
+    except ValueError:  # HTTP-date form; fall back to normal backoff
+        return None
+
+
 class Toolbox:
-    def __init__(self, base_url: str = DEFAULT_BASE, timeout: float = 20.0):
-        self.base_url = base_url
+    """Executes the agent's tool calls over HTTP and records an event log."""
+
+    def __init__(self, base_url: str | None = None, timeout: float = 20.0):
+        self.base_url = base_url or settings.PROXY_URL
         self.client = httpx.Client(timeout=timeout)
         self.events: list[Event] = []
         self.call_count = 0
+        self.error_count = 0
+        self.retries = 0
 
     def log(self, kind: str, **kw):
         self.events.append(Event(step_idx=len(self.events), kind=kind, **kw))
 
-    def call(self, name: str, args: dict) -> tuple[str, bool]:
-        spec = BY_NAME.get(name)
-        if spec is None:
-            return f'{{"error":"unknown_tool","detail":"{name}"}}', True
-
-        self.call_count += 1
-        self.log("tool_call", tool_name=name, payload=args)
+    def _request(self, spec: dict, args: dict) -> Response:
         url = self.base_url + spec["path"]
-        start = time.perf_counter()
         try:
             if spec["method"] == "GET":
                 r = self.client.get(url, params=args)
             else:
                 r = self.client.post(url, params=args)
-            body = r.text
-            is_error = r.status_code >= 400
         except Exception as exc:
-            body = f'{{"error":"transport","detail":"{type(exc).__name__}"}}'
-            is_error = True
+            return Response(json.dumps({"error": "transport", "detail": type(exc).__name__}), None)
+        return Response(
+            r.text,
+            r.status_code,
+            faulted="x-faultline-injected" in r.headers,
+            retry_after=_seconds(r.headers.get("retry-after")),
+        )
 
-        latency = int((time.perf_counter() - start) * 1000)
-        faulted = "x-faultline-injected" in getattr(locals().get("r", None), "headers", {})
+    def _attempt(self, name: str, spec: dict, args: dict) -> Response:
+        start = time.perf_counter()
+        resp = self._request(spec, args)
         self.log(
             "tool_result",
             tool_name=name,
-            fault_injected=faulted,
-            latency_ms=latency,
-            payload={"body": body[:2000], "error": is_error},
+            fault_injected=resp.faulted,
+            latency_ms=int((time.perf_counter() - start) * 1000),
+            payload={"body": resp.body[:2000], "status": resp.status, "error": resp.is_error},
         )
-        return body, is_error
+        return resp
+
+    def execute(self, name: str, args: dict) -> Response:
+        return self._attempt(name, BY_NAME[name], args)
+
+    def call(self, name: str, args: dict, allowed: list[str] | None = None) -> tuple[str, bool]:
+        if name not in BY_NAME or (allowed is not None and name not in allowed):
+            self.error_count += 1
+            return json.dumps({"error": "unknown_tool", "detail": name}), True
+
+        self.call_count += 1
+        self.log("tool_call", tool_name=name, payload=args)
+        resp = self.execute(name, args)
+        if resp.is_error:
+            self.error_count += 1
+        return resp.body, resp.is_error
 
     def close(self):
         self.client.close()
+
+
+def _parses(body: str) -> bool:
+    try:
+        json.loads(body)
+        return True
+    except ValueError:
+        return False
+
+
+class ResilientToolbox(Toolbox):
+    """Toolbox with client-side retries, the way a production SDK would add them.
+
+    Reads are idempotent, so they are retried on any transport-level failure or
+    unparseable body. Writes are retried only on 429, which guarantees the
+    request was not executed; a 5xx on a write may have committed, so it is
+    passed through to the agent rather than risk a duplicate.
+    """
+
+    max_attempts = 3
+    max_backoff_s = 2.0
+    base_backoff_s = 0.25
+
+    def _retryable(self, spec: dict, resp: Response) -> bool:
+        if resp.status == 429:
+            return True
+        if spec["method"] != "GET":
+            return False
+        if resp.status is None or resp.status in (500, 502, 503, 504):
+            return True
+        return resp.status < 400 and not _parses(resp.body)
+
+    def execute(self, name: str, args: dict) -> Response:
+        spec = BY_NAME[name]
+        for attempt in range(1, self.max_attempts + 1):
+            resp = self._attempt(name, spec, args)
+            if attempt == self.max_attempts or not self._retryable(spec, resp):
+                return resp
+            delay = resp.retry_after if resp.retry_after is not None else self.base_backoff_s * 2 ** (attempt - 1)
+            delay = min(delay, self.max_backoff_s)
+            self.retries += 1
+            self.log("retry", tool_name=name, payload={"attempt": attempt, "status": resp.status, "delay_s": delay})
+            time.sleep(delay)
+        return resp

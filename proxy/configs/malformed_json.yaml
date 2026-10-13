@@ -1,0 +1,7 @@
+seed: 0
+faults:
+  - type: malformed_json
+    rate: 0.3
+    target: [search_inventory, get_customer, get_pricing, list_orders]
+    params:
+      mode: truncate

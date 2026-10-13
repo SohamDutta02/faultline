@@ -22,6 +22,7 @@ from sweep import report, store
 from sweep.run import FAULT_CONFIGS, LLM_ARCHITECTURES, execute, plan, set_fault_config
 from tasks.catalog import BY_ID, CATALOG
 
+from .auth import BasicAuth
 from .jobs import Busy, Job, JobManager
 
 PLAYGROUND = "playground"
@@ -55,9 +56,13 @@ def create_app(
     backend_factory: Callable[[], Backend] | None = None,
     llm_available: bool | None = None,
     static_dir: Path | None = WEB_DIST,
+    login: tuple[str, str] | None = None,
 ) -> FastAPI:
     """The faultline web app. By default it runs its own toolserver and proxy
-    in-process; pass serve_stack=False with URLs to use running ones."""
+    in-process; pass serve_stack=False with URLs to use running ones.
+
+    login is (username, password); by default it comes from FAULTLINE_USER and
+    FAULTLINE_PASSWORD, and an empty password leaves the app open."""
     jobs = JobManager()
     urls = {"toolserver": toolserver_url or settings.TOOLSERVER_URL, "proxy": proxy_url or settings.PROXY_URL}
     make_backend = backend_factory or default_backend
@@ -76,6 +81,9 @@ def create_app(
 
     app = FastAPI(title="faultline", lifespan=lifespan)
     app.state.jobs = jobs
+    username, password = login if login is not None else settings.app_login()
+    if password:
+        app.add_middleware(BasicAuth, username=username, password=password)
 
     def db():
         return closing(store.connect(db_path, check_same_thread=False))

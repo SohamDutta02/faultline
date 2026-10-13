@@ -1,0 +1,15 @@
+# Reverse proxy in front of the app. Caddy gets and renews an HTTPS
+# certificate for $DOMAIN on its own; ports 80 and 443 must be reachable.
+{$DOMAIN} {
+	# The app has no accounts of its own, and anyone who can reach it can
+	# start trials (and spend model quota), so it sits behind a password.
+	basic_auth {
+		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+	}
+
+	# Compress everything except the live event streams.
+	@compressible not path /api/jobs/*/events
+	encode @compressible zstd gzip
+
+	reverse_proxy app:8000
+}

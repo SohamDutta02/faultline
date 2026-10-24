@@ -10,6 +10,11 @@ export function useMeta(): Meta {
   return meta;
 }
 
+/** Whether any model provider is configured, so model-driven harnesses can run. */
+export function hasModel(meta: Meta): boolean {
+  return meta.llm_available || (meta.providers ?? []).some((p) => p.available);
+}
+
 /** GET a path, optionally re-polling. Keeps the previous data while refetching. */
 export function useFetch<T>(path: string | null, pollMs?: number) {
   const [data, setData] = useState<T | null>(null);

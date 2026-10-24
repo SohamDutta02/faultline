@@ -46,7 +46,9 @@ fault proxy run in-process, next to the API and the UI.
   subsystems and presets, and a live harness audit.
 
 The scripted architectures work without an API key, so the whole app is
-usable offline; the model-driven ones unlock once `GEMINI_API_KEY` is set.
+usable offline; the model-driven ones unlock once a model provider is
+configured (see [Models](#models)). The Playground and the sweep form take a
+model id per run.
 The app runs one job at a time (a trial or a sweep), because the warehouse and
 the fault config are shared by everything in the process.
 
@@ -65,7 +67,7 @@ cd web && npm run dev
 
 # or run it all in a container
 docker build -t faultline .
-docker run -p 8000:8000 -v faultline-data:/data -e GEMINI_API_KEY=... faultline
+docker run -p 8000:8000 -v faultline-data:/data -e ANTHROPIC_API_KEY=... faultline   # or GEMINI_API_KEY, OPENAI_*
 ```
 
 To put it online behind HTTPS and a password, see [docs/deploy.md](docs/deploy.md)
@@ -85,15 +87,49 @@ python -m sweep.run --label control --archs oracle oracle_retry --serve
 python -m sweep.report --label control --by-task
 ```
 
-To run the LLM architectures, copy `.env.example` to `.env` and set
-`GEMINI_API_KEY` (optionally `FAULTLINE_MODEL`), then:
+To run the LLM architectures, copy `.env.example` to `.env` and set a key for
+one provider (see [Models](#models)), then:
 
 ```bash
-python -m sweep.run --label gemini-001 --serve
+python -m sweep.run --label gemini-001 --model gemini-2.0-flash --serve
 python -m sweep.report --label gemini-001 --by-task --markdown results/gemini-001.md
 python -m sweep.trials --label gemini-001 --outcome fail_wrong_answer   # find failures
 python -m sweep.trials --trial 1a2b3c4d                                  # replay one
 ```
+
+### Models
+
+The model id picks the provider; `--provider` (or `FAULTLINE_PROVIDER`)
+overrides the guess.
+
+| model id | provider | needs |
+|---|---|---|
+| `gemini-*` | Google Gemini | `GEMINI_API_KEY` |
+| `claude-*` (default `claude-haiku-5-5`) | Anthropic Messages API | `ANTHROPIC_API_KEY` |
+| `gpt-*`, `o1`/`o3`/`o4*` | OpenAI chat completions | `OPENAI_API_KEY` |
+| anything else (`Qwen/Qwen3-8B`, `llama3.1`, ...) | any OpenAI-compatible server: vLLM, SGLang, Ollama, llama.cpp, OpenRouter | `OPENAI_BASE_URL`; a key only if the server wants one |
+
+`--model` on `sweep.run` and `runner.trial` picks the model for that run; with
+none, `FAULTLINE_MODEL` applies, else the default model of the first provider
+that has a key. Every trial records the model that drove it.
+
+```bash
+# your own model, served with tool calling on
+vllm serve Qwen/Qwen3-8B --enable-auto-tool-choice --tool-call-parser hermes
+OPENAI_BASE_URL=http://localhost:8000/v1 python -m sweep.run --label qwen3-8b --model Qwen/Qwen3-8B --pace 0 --serve
+```
+
+The harness fingerprint leaves the model out, so the same harness can be
+compared across models: run the same matrix with two `--model`s, then
+`python -m sweep.compare --base gemini-001 --head qwen3-8b`. The report notes
+that the model changed.
+
+Sampling differs by provider: Gemini and local OpenAI-compatible servers run
+at temperature 0; Claude models and OpenAI's own API run at their default
+sampling (OpenAI's reasoning models reject a temperature). Repeats and paired
+cells absorb the noise, but expect more of it there. Rate limits, overloads
+and server errors are retried with backoff; a quota, credit or spend limit
+pauses the sweep instead of failing every remaining cell.
 
 `--serve` runs the toolserver and proxy inside the sweep process on free
 ports. To keep them running between commands instead, start
@@ -411,7 +447,9 @@ safely. What's left are calls that timed out on all three attempts.
   behaviour in code. It is usable as `single+slot=option` right away; add a
   preset in `harness/spec.py` if it deserves a name.
 - **Model provider**: implement the `agents.llm.Backend` protocol (one
-  `complete(messages, tools, system) -> Reply` method).
+  `complete(messages, tools, system) -> Reply` method, translating the
+  provider-neutral conversation; see `agents/anthropic_backend.py`), and route
+  model ids to it in `agents/backends.py`.
 
 ## Layout
 
@@ -419,7 +457,7 @@ safely. What's left are calls that timed out on all three attempts.
 toolserver/   seeded warehouse world and six tool endpoints (FastAPI)
 proxy/        fault-injecting reverse proxy, fault classes, configs
 tasks/        task catalog, checks, verifier
-agents/       LLM backend, toolbox clients, agent loop, oracle, architecture registry
+agents/       model backends (Gemini, Anthropic, OpenAI-compatible), toolbox clients, agent loop, oracle, architecture registry
 harness/      the five harness subsystems, presets, harness names, fingerprints, deterministic checks, audit
 runner/       single-trial runner, in-process server stack
 sweep/        sweep runner, SQLite store, report, controlled comparisons, failure attribution, harness
@@ -435,6 +473,5 @@ settings.py   URLs, model, API key (from .env)
 - Write tasks are graded on world state. An agent that says "the order failed"
   after a partial write that actually committed still passes, even though its
   report was wrong.
-- Only a Gemini backend ships; other providers need a `Backend` implementation.
 - One small seeded world. Results say how architectures compare under these
   faults, not how a given agent would do in production.

@@ -71,6 +71,7 @@ MIGRATIONS = {
         "feedback": "text",
         "attribution": "text",
         "harness_fp": "text",
+        "model": "text",
     },
     "trial_event": {"channel": "text"},
 }
@@ -153,8 +154,9 @@ def record(conn, sweep_id: str, fault_config: str, repeat_idx: int, seed: int, r
         """insert into trial
            (id, sweep_id, task_id, architecture_id, fault_config, repeat_idx, seed,
             outcome, reason, fault_fired, tool_calls, tool_errors, retries, llm_calls,
-            tokens_used, duration_ms, answer, checks, world_diff, feedback, attribution, harness_fp, created_at)
-           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            tokens_used, duration_ms, answer, checks, world_diff, feedback, attribution, harness_fp, model,
+            created_at)
+           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             trial_id, sweep_id, result.task_id, result.architecture_id, fault_config,
             repeat_idx, seed, result.outcome, result.reason, int(result.fault_fired),
@@ -163,7 +165,8 @@ def record(conn, sweep_id: str, fault_config: str, repeat_idx: int, seed: int, r
             json.dumps(result.checks), json.dumps(result.world_diff),
             json.dumps(result.feedback) if getattr(result, "feedback", None) else None,
             json.dumps(result.attribution) if getattr(result, "attribution", None) else None,
-            remember_harness(conn, result.architecture_id, getattr(result, "harness", None)), now(),
+            remember_harness(conn, result.architecture_id, getattr(result, "harness", None)),
+            getattr(result, "model", None), now(),
         ),
     )
     conn.executemany(
@@ -251,7 +254,7 @@ def list_trials(conn, sweep_id: str, filters: dict | None = None, limit: int = 5
     rows = conn.execute(
         f"""select id, task_id, architecture_id, fault_config, repeat_idx, seed, outcome, reason,
                    fault_fired, tool_calls, tool_errors, retries, llm_calls, tokens_used,
-                   duration_ms, answer, attribution, created_at
+                   duration_ms, answer, attribution, model, created_at
             from trial where {' and '.join(where)}
             order by created_at desc limit ?""",
         params + [limit],

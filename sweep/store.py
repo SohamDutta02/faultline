@@ -60,6 +60,7 @@ MIGRATIONS = {
         "checks": "text",
         "world_diff": "text",
         "feedback": "text",
+        "attribution": "text",
     },
     "trial_event": {"channel": "text"},
 }
@@ -137,15 +138,16 @@ def record(conn, sweep_id: str, fault_config: str, repeat_idx: int, seed: int, r
         """insert into trial
            (id, sweep_id, task_id, architecture_id, fault_config, repeat_idx, seed,
             outcome, reason, fault_fired, tool_calls, tool_errors, retries, llm_calls,
-            tokens_used, duration_ms, answer, checks, world_diff, feedback, created_at)
-           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            tokens_used, duration_ms, answer, checks, world_diff, feedback, attribution, created_at)
+           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             trial_id, sweep_id, result.task_id, result.architecture_id, fault_config,
             repeat_idx, seed, result.outcome, result.reason, int(result.fault_fired),
             result.tool_calls, result.tool_errors, result.retries, result.llm_calls,
             result.tokens_used, result.duration_ms, result.answer,
             json.dumps(result.checks), json.dumps(result.world_diff),
-            json.dumps(result.feedback) if getattr(result, "feedback", None) else None, now(),
+            json.dumps(result.feedback) if getattr(result, "feedback", None) else None,
+            json.dumps(result.attribution) if getattr(result, "attribution", None) else None, now(),
         ),
     )
     conn.executemany(
@@ -201,12 +203,12 @@ def list_trials(conn, sweep_id: str, filters: dict | None = None, limit: int = 5
     rows = conn.execute(
         f"""select id, task_id, architecture_id, fault_config, repeat_idx, seed, outcome, reason,
                    fault_fired, tool_calls, tool_errors, retries, llm_calls, tokens_used,
-                   duration_ms, answer, created_at
+                   duration_ms, answer, attribution, created_at
             from trial where {' and '.join(where)}
             order by created_at desc limit ?""",
         params + [limit],
     ).fetchall()
-    return [dict(r) for r in rows]
+    return [{**dict(r), "attribution": json.loads(r["attribution"]) if r["attribution"] else None} for r in rows]
 
 
 def get_trial(conn, trial_id: str) -> dict | None:
@@ -217,6 +219,7 @@ def get_trial(conn, trial_id: str) -> dict | None:
     trial["checks"] = json.loads(trial["checks"]) if trial.get("checks") else []
     trial["world_diff"] = json.loads(trial["world_diff"]) if trial.get("world_diff") else None
     trial["feedback"] = json.loads(trial["feedback"]) if trial.get("feedback") else None
+    trial["attribution"] = json.loads(trial["attribution"]) if trial.get("attribution") else None
     sweep = conn.execute("select label from sweep where id = ?", (trial["sweep_id"],)).fetchone()
     trial["sweep_label"] = sweep["label"] if sweep else None
     events = conn.execute(

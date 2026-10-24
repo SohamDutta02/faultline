@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from functools import lru_cache, partial
 
 from harness import BadHarness, HarnessSpec, PRESETS, SLOTS, apply_edits, fingerprint, manifest, split
+from harness import ablation as harness_ablation
+from harness.spec import dedupe
 from harness import runner as harness_runner
 from harness.components import option
 from tasks.spec import Task
@@ -79,6 +81,20 @@ def resolve(arch_id: str) -> Architecture:
     spec = apply_edits(preset.spec, edits)
     run = partial(harness_runner.run, spec=spec)
     return Architecture(arch_id, run, spec, True, _describe(head, preset.spec, spec, preset.description))
+
+
+def ablation(arch_id: str) -> list[str]:
+    """harness.ablation for LLM harnesses; the scripted controls ablate around oracle."""
+    head, edits = split(arch_id)
+    if head not in SCRIPTED:
+        return harness_ablation(arch_id)
+    spec = resolve(arch_id).spec
+    changed = spec.differs(SCRIPTED["oracle"][0])
+    if not changed:
+        raise BadHarness(f"{arch_id} is the plain oracle; nothing to ablate")
+    names = (["oracle"] + [f"oracle+{s}={getattr(spec, s)}" for s in changed]
+             + [f"{arch_id}-{s}" for s in changed] + [arch_id])
+    return dedupe(names, lambda n: resolve(n).spec)
 
 
 def is_valid(arch_id: str) -> bool:

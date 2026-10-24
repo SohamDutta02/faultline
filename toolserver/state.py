@@ -23,6 +23,8 @@ class World:
         self.tick = 0
         self.order_counter = 0
         self.orders = {}
+        # request_id -> the first response to that write, for idempotent retries
+        self.requests = {}
 
         self.inventory = {}
         for row in deepcopy(fixtures.SKUS):
@@ -70,7 +72,26 @@ class World:
             raise NotFound(f"unknown customer {customer_id}")
         return [o for o in self.orders.values() if o["customer_id"] == customer_id]
 
-    def place_order(self, customer_id: str, sku: str, qty: int):
+    def _replay(self, request_id: str | None, tool: str, args: dict):
+        """The stored response if this write was already done under request_id."""
+        if not request_id or request_id not in self.requests:
+            return None
+        seen = self.requests[request_id]
+        if (seen["tool"], seen["args"]) != (tool, args):
+            raise Rejected(f"request_id {request_id} was already used for a different request")
+        return {**seen["result"], "replayed": True}
+
+    def _remember(self, request_id: str | None, tool: str, args: dict, result: dict) -> dict:
+        if request_id:
+            self.requests[request_id] = {"tool": tool, "args": args, "result": dict(result)}
+        return result
+
+    def place_order(self, customer_id: str, sku: str, qty: int, request_id: str | None = None):
+        args = {"customer_id": customer_id, "sku": sku, "qty": qty}
+        replay = self._replay(request_id, "place_order", args)
+        if replay is not None:
+            return replay
+
         customer = self.get_customer(customer_id)
         row = self.inventory.get(sku)
         if row is None:
@@ -105,9 +126,13 @@ class World:
             "created_at": self._now().isoformat(),
         }
         self.orders[order_id] = order
-        return dict(order)
+        return self._remember(request_id, "place_order", args, dict(order))
 
-    def cancel_order(self, order_id: str):
+    def cancel_order(self, order_id: str, request_id: str | None = None):
+        replay = self._replay(request_id, "cancel_order", {"order_id": order_id})
+        if replay is not None:
+            return replay
+
         order = self.orders.get(order_id)
         if order is None:
             raise NotFound(f"unknown order {order_id}")
@@ -119,7 +144,7 @@ class World:
         row = self.inventory[order["sku"]]
         row["qty"] += order["qty"]
         row["updated_at"] = self._now()
-        return {"ok": True, "order_id": order_id}
+        return self._remember(request_id, "cancel_order", {"order_id": order_id}, {"ok": True, "order_id": order_id})
 
     def snapshot(self):
         return {

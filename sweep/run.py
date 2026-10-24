@@ -9,16 +9,16 @@ import httpx
 
 import settings
 from agents.llm import LLMError
-from agents.registry import ARCHITECTURES
+from agents.registry import LLM_PRESETS, resolve
 from proxy.config import available
 from runner.stack import local_stack
-from runner.trial import run_trial
+from runner.trial import arch_id, run_trial
 from tasks.catalog import BY_ID, CATALOG
 
 from . import store
 
 FAULT_CONFIGS = ["none", "rate_limit", "timeout", "malformed_json", "stale_data", "plausible_wrong", "partial_write"]
-LLM_ARCHITECTURES = [a for a, spec in ARCHITECTURES.items() if spec.needs_llm]
+LLM_ARCHITECTURES = LLM_PRESETS
 
 
 def cell_seed(task_id: str, fault_config: str, repeat_idx: int) -> int:
@@ -94,7 +94,7 @@ def execute(
     for i, cell in enumerate(todo, 1):
         if stop():
             return "stopped"
-        arch = ARCHITECTURES[cell.architecture_id]
+        arch = resolve(cell.architecture_id)
         seed = cell_seed(cell.task_id, cell.fault_config, cell.repeat_idx)
         set_fault_config(proxy_url, cell.fault_config, seed)
         result = run_trial(
@@ -132,7 +132,8 @@ def build_parser():
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--pace", type=float, default=15.0, help="seconds between LLM trials (rate limits)")
     ap.add_argument("--configs", nargs="*", default=FAULT_CONFIGS)
-    ap.add_argument("--archs", nargs="*", default=LLM_ARCHITECTURES, choices=sorted(ARCHITECTURES))
+    ap.add_argument("--archs", nargs="*", default=LLM_ARCHITECTURES, type=arch_id,
+                    help="harness presets or edits (single+feedback=critic), or the scripted oracle controls")
     ap.add_argument("--tasks", nargs="*", default=[t.id for t in CATALOG], choices=sorted(BY_ID))
     ap.add_argument("--max-steps", type=int, default=12)
     ap.add_argument("--serve", action="store_true", help="run the toolserver and proxy in-process")
@@ -158,7 +159,7 @@ def main(argv=None):
         raise SystemExit(f"unknown fault configs {unknown}; have {available()}")
 
     backend = None
-    if any(ARCHITECTURES[a].needs_llm for a in args.archs):
+    if any(resolve(a).needs_llm for a in args.archs):
         from agents.llm import default_backend
         try:
             backend = default_backend()

@@ -9,7 +9,7 @@ import httpx
 import settings
 from agents.llm import Backend, LLMError
 from agents.loop import AgentContext, StepBudgetExceeded
-from agents.registry import ARCHITECTURES
+from agents.registry import BadHarness, resolve
 from tasks.catalog import BY_ID, CATALOG
 from tasks.spec import Task
 from tasks.verify import verify, world_diff
@@ -53,14 +53,14 @@ def run_trial(
     """Reset the world, let one architecture attempt one task through the proxy,
     and grade the world it leaves behind. The fault config is whatever the proxy
     currently has active. on_event receives each Event as it is logged."""
-    arch = ARCHITECTURES[architecture_id]
+    arch = resolve(architecture_id)
     if arch.needs_llm and backend is None:
         raise ValueError(f"architecture {architecture_id} needs an LLM backend")
 
     with httpx.Client(base_url=toolserver_url or settings.TOOLSERVER_URL, timeout=15) as admin:
         before = prepare_world(admin, task)
 
-        ctx = AgentContext(arch.toolbox(proxy_url or settings.PROXY_URL, on_event=on_event), backend, max_steps)
+        ctx = AgentContext(arch.make_toolbox(proxy_url or settings.PROXY_URL, on_event=on_event), backend, max_steps)
         answer, error = None, None
         start = time.perf_counter()
         try:
@@ -99,15 +99,24 @@ def run_trial(
     )
 
 
+def arch_id(value: str) -> str:
+    """argparse type for architecture ids: presets, scripted controls, or edited harnesses."""
+    try:
+        resolve(value)
+    except BadHarness as exc:
+        raise argparse.ArgumentTypeError(str(exc))
+    return value
+
+
 def main():
     ap = argparse.ArgumentParser(description="run tasks once against the proxy's current fault config")
-    ap.add_argument("--arch", default="single", choices=sorted(ARCHITECTURES))
+    ap.add_argument("--arch", default="single", type=arch_id, help="a harness preset or edit, e.g. single+tools=retrying")
     ap.add_argument("--tasks", nargs="*", default=[t.id for t in CATALOG], choices=sorted(BY_ID))
     ap.add_argument("--pace", type=float, default=0.0, help="seconds to sleep between LLM trials")
     args = ap.parse_args()
 
     backend = None
-    if ARCHITECTURES[args.arch].needs_llm:
+    if resolve(args.arch).needs_llm:
         from agents.llm import default_backend
         backend = default_backend()
 

@@ -2,7 +2,7 @@ import json
 
 import httpx
 
-from agents.critic import verdict
+from harness.feedback import verdict
 from agents.llm import Reply, ScriptedBackend, ToolCall
 from agents.toolbox import ResilientToolbox
 from runner.trial import run_trial

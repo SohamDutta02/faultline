@@ -13,7 +13,8 @@ from pydantic import BaseModel, Field
 
 import settings
 from agents.llm import Backend, default_backend
-from agents.registry import ARCHITECTURES
+import harness
+from agents.registry import ARCHITECTURES, BadHarness, resolve
 from proxy import config as fault_config
 from proxy.faults import REGISTRY
 from runner.stack import local_stack
@@ -64,6 +65,14 @@ def create_app(
     login is (username, password); by default it comes from FAULTLINE_USER and
     FAULTLINE_PASSWORD, and an empty password leaves the app open."""
     jobs = JobManager()
+
+    def arch_info(arch_id: str) -> dict:
+        a = resolve(arch_id)
+        return {
+            "id": a.id, "description": a.description, "needs_llm": a.needs_llm,
+            "retries": a.spec.tools == "retrying", "spec": a.spec.as_dict(), "slots": list(a.slots),
+            "fingerprint": a.fingerprint,
+        }
     urls = {"toolserver": toolserver_url or settings.TOOLSERVER_URL, "proxy": proxy_url or settings.PROXY_URL}
     make_backend = backend_factory or default_backend
 
@@ -109,11 +118,19 @@ def create_app(
         return {
             "model": settings.MODEL,
             "llm_available": has_llm(),
-            "architectures": [
-                {"id": a.id, "description": a.description, "needs_llm": a.needs_llm,
-                 "retries": a.toolbox.__name__ == "ResilientToolbox"}
-                for a in ARCHITECTURES.values()
-            ],
+            "architectures": [arch_info(a.id) for a in ARCHITECTURES.values()],
+            "harness": {
+                "slots": [
+                    {
+                        "id": slot,
+                        "description": harness.SLOT_DESCRIPTIONS[slot],
+                        "baseline": getattr(harness.BASELINE, slot),
+                        "options": [{"id": o.id, "description": o.description} for o in harness.OPTIONS[slot].values()],
+                    }
+                    for slot in harness.SLOTS
+                ],
+                "presets": list(harness.PRESETS),
+            },
             "tasks": [
                 {"id": t.id, "prompt": t.prompt, "category": t.category, "seed": t.seed,
                  "checks": [c.check_name for c in t.checks], "setup": t.setup}
@@ -125,6 +142,13 @@ def create_app(
             },
             "sweep_defaults": {"configs": FAULT_CONFIGS, "archs": LLM_ARCHITECTURES, "tasks": [t.id for t in CATALOG]},
         }
+
+    @app.get("/api/architectures/{arch_id}")
+    def describe_architecture(arch_id: str):
+        try:
+            return arch_info(arch_id)
+        except BadHarness as exc:
+            raise HTTPException(400, str(exc))
 
     # ---- jobs ----------------------------------------------------------------
 
@@ -183,9 +207,11 @@ def create_app(
 
     def check_archs(arch_ids: list[str]):
         for a in arch_ids:
-            if a not in ARCHITECTURES:
-                raise HTTPException(400, f"unknown architecture {a}")
-            if ARCHITECTURES[a].needs_llm and not has_llm():
+            try:
+                arch = resolve(a)
+            except BadHarness as exc:
+                raise HTTPException(400, str(exc))
+            if arch.needs_llm and not has_llm():
                 raise HTTPException(400, f"{a} needs a model; set GEMINI_API_KEY in .env and restart")
 
     def check_configs(names: list[str]):
@@ -204,7 +230,7 @@ def create_app(
 
         def target(job: Job):
             p = job.params
-            arch = ARCHITECTURES[p["architecture_id"]]
+            arch = resolve(p["architecture_id"])
             backend = make_backend() if arch.needs_llm else None
             set_fault_config(urls["proxy"], p["fault_config"], p["seed"])
             job.emit("start", **p)
@@ -268,7 +294,7 @@ def create_app(
 
         def target(job: Job):
             p = job.params
-            needs_llm = any(ARCHITECTURES[a].needs_llm for a in p["archs"])
+            needs_llm = any(resolve(a).needs_llm for a in p["archs"])
             backend = make_backend() if needs_llm else None
             with db() as conn:
                 matrix = {k: p[k] for k in ("archs", "configs", "tasks", "repeats")}

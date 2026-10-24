@@ -25,11 +25,13 @@ def list_orders(customer_id: str = Query(...)):
     return {"orders": world.list_orders(customer_id)}
 
 
+# request_id is optional: writes that carry one are idempotent (a repeat returns
+# the first response instead of acting twice), the way payment APIs do it.
 @router.post("/place_order")
-def place_order(customer_id: str, sku: str, qty: int):
-    return world.place_order(customer_id, sku, qty)
+def place_order(customer_id: str, sku: str, qty: int, request_id: str | None = None):
+    return world.place_order(customer_id, sku, qty, request_id)
 
 
 @router.post("/cancel_order")
-def cancel_order(order_id: str):
-    return world.cancel_order(order_id)
+def cancel_order(order_id: str, request_id: str | None = None):
+    return world.cancel_order(order_id, request_id)

@@ -1,4 +1,5 @@
 import argparse
+import json
 from collections import defaultdict
 from pathlib import Path
 
@@ -14,6 +15,39 @@ COST_FIELDS = ["tool_calls", "tool_errors", "retries", "llm_calls", "tokens_used
 def _order(values, preferred):
     rank = {v: i for i, v in enumerate(preferred)}
     return sorted(set(values), key=lambda v: (rank.get(v, len(rank)), v))
+
+
+def feedback_stats(rows) -> dict:
+    """What feedback did, from trials that recorded their first answer's grade.
+
+    fixed: first answer failed, final passed. broke: the reverse. flagged: the
+    first review asked for a revision; a false alarm is a flag on a first
+    answer that had passed, a miss is no flag on one that had failed."""
+    s = {"n": 0, "first_pass": 0, "final": 0, "fixed": 0, "broke": 0, "flagged": 0,
+         "false_alarms": 0, "missed": 0, "extra_tool_calls": 0.0, "extra_tokens": 0.0}
+    for t in rows:
+        fb = t["feedback"]
+        fb = json.loads(fb) if isinstance(fb, str) else fb
+        if not fb:
+            continue
+        first = fb["first_pass"].get("outcome") == "pass"
+        final = t["outcome"] == "pass"
+        reviews = fb.get("reviews") or []
+        flagged = bool(reviews) and reviews[0]["verdict"] == "revise"
+        s["n"] += 1
+        s["first_pass"] += first
+        s["final"] += final
+        s["fixed"] += (not first) and final
+        s["broke"] += first and not final
+        s["flagged"] += flagged
+        s["false_alarms"] += first and flagged
+        s["missed"] += (not first) and not flagged
+        s["extra_tool_calls"] += (t["tool_calls"] or 0) - fb["first_pass"].get("tool_calls", 0)
+        s["extra_tokens"] += (t["tokens_used"] or 0) - fb["first_pass"].get("tokens", 0)
+    if s["n"]:
+        s["extra_tool_calls"] /= s["n"]
+        s["extra_tokens"] /= s["n"]
+    return s
 
 
 def summarize(conn, label: str) -> dict | None:
@@ -65,6 +99,9 @@ def summarize(conn, label: str) -> dict | None:
         "by_task": [
             {"arch": a, "task": tid, "config": c, **tally(by_task[(a, tid, c)])}
             for a in archs for tid in tasks for c in configs
+        ],
+        "feedback": [
+            {"arch": a, **stats} for a in archs if (stats := feedback_stats(per_arch[a]))["n"]
         ],
     }
 
@@ -145,6 +182,21 @@ def build(conn, label: str, by_task: bool = False, markdown: bool = False) -> st
         f"{h}Mean cost per trial",
         render(["arch", "tool calls", "tool errors", "retries", "llm calls", "tokens", "seconds"], cost_rows, markdown),
     ]
+
+    if s["feedback"]:
+        def pct(k, f):
+            return f"{100 * f[k] / f['n']:.0f}%"
+        fb_rows = [
+            [f["arch"], f["n"], pct("first_pass", f), pct("final", f), f["fixed"], f["broke"], f["flagged"],
+             f["false_alarms"], f["missed"], f"{f['extra_tool_calls']:.1f}", f"{f['extra_tokens']:.0f}"]
+            for f in s["feedback"]
+        ]
+        out += [
+            "",
+            f"{h}Feedback: first answer vs final",
+            render(["arch", "n", "first pass", "final", "fixed", "broke", "flagged", "false alarms", "missed",
+                    "+tool calls", "+tokens"], fb_rows, markdown),
+        ]
 
     if by_task:
         tgrid = {(b["arch"], b["task"], b["config"]): b for b in s["by_task"]}

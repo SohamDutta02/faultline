@@ -9,6 +9,7 @@ import httpx
 import settings
 from agents.llm import Backend, LLMError
 from agents.loop import AgentContext, StepBudgetExceeded
+from agents.toolbox import Toolbox
 from agents.registry import BadHarness, resolve
 from tasks.catalog import BY_ID, CATALOG
 from tasks.spec import Task
@@ -32,6 +33,8 @@ class TrialResult:
     events: list
     checks: list = field(default_factory=list)
     world_diff: dict = field(default_factory=dict)
+    # for harnesses with feedback: {"option", "first_pass": checkpoint, "reviews": [...]}
+    feedback: dict | None = None
 
 
 def prepare_world(admin: httpx.Client, task: Task) -> dict:
@@ -57,10 +60,25 @@ def run_trial(
     if arch.needs_llm and backend is None:
         raise ValueError(f"architecture {architecture_id} needs an LLM backend")
 
-    with httpx.Client(base_url=toolserver_url or settings.TOOLSERVER_URL, timeout=15) as admin:
+    toolserver_url = toolserver_url or settings.TOOLSERVER_URL
+    proxy_url = proxy_url or settings.PROXY_URL
+    with httpx.Client(base_url=toolserver_url, timeout=15) as admin:
         before = prepare_world(admin, task)
 
-        ctx = AgentContext(arch.make_toolbox(proxy_url or settings.PROXY_URL, on_event=on_event), backend, max_steps)
+        def grade(answer):
+            v = verify(task, before, admin.get("/_admin/state").json(), answer)
+            return {"outcome": v.outcome.value, "reason": v.reason}
+
+        toolbox = arch.make_toolbox(proxy_url, on_event=on_event)
+        ctx = AgentContext(
+            toolbox, backend, max_steps,
+            channels={
+                # feedback reads through the proxy like the agent, or straight from the toolserver
+                "review": lambda: arch.make_toolbox(proxy_url, sink=toolbox, channel="review"),
+                "truth": lambda: Toolbox(toolserver_url, sink=toolbox, channel="truth"),
+            },
+            on_checkpoint=grade,
+        )
         answer, error = None, None
         start = time.perf_counter()
         try:
@@ -73,21 +91,26 @@ def run_trial(
             ctx.toolbox.log("crash", payload={"traceback": traceback.format_exc()[-2000:]})
             error = f"crash: {type(exc).__name__}: {exc}"
         finally:
-            ctx.toolbox.close()
+            for tb in ctx.toolboxes:
+                tb.close()
         duration_ms = int((time.perf_counter() - start) * 1000)
 
         after = admin.get("/_admin/state").json()
 
     tb = ctx.toolbox
+    usage = ctx.usage()
     verdict = verify(task, before, after, answer, error)
+    feedback = None
+    if ctx.checkpoints:
+        feedback = {"option": arch.spec.feedback, "first_pass": ctx.checkpoints[0], "reviews": ctx.reviews}
     return TrialResult(
         task_id=task.id,
         architecture_id=architecture_id,
         outcome=verdict.outcome.value,
         reason=verdict.reason,
-        tool_calls=tb.call_count,
-        tool_errors=tb.error_count,
-        retries=tb.retries,
+        tool_calls=usage["tool_calls"],
+        tool_errors=usage["tool_errors"],
+        retries=usage["retries"],
         llm_calls=ctx.llm_calls,
         tokens_used=ctx.tokens,
         duration_ms=duration_ms,
@@ -96,6 +119,7 @@ def run_trial(
         events=[asdict(e) for e in tb.events],
         checks=[asdict(c) for c in verdict.checks],
         world_diff=world_diff(before, after),
+        feedback=feedback,
     )
 
 
@@ -110,7 +134,8 @@ def arch_id(value: str) -> str:
 
 def main():
     ap = argparse.ArgumentParser(description="run tasks once against the proxy's current fault config")
-    ap.add_argument("--arch", default="single", type=arch_id, help="a harness preset or edit, e.g. single+tools=retrying")
+    ap.add_argument("--arch", default="single", type=arch_id,
+                    help="a harness preset or edit, e.g. single+tools=retrying")
     ap.add_argument("--tasks", nargs="*", default=[t.id for t in CATALOG], choices=sorted(BY_ID))
     ap.add_argument("--pace", type=float, default=0.0, help="seconds to sleep between LLM trials")
     args = ap.parse_args()

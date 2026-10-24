@@ -1,5 +1,6 @@
 import json
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 
 from .llm import Backend, Reply
 from .toolbox import Toolbox
@@ -19,6 +20,52 @@ class AgentContext:
     max_steps: int = 12
     tokens: int = 0
     llm_calls: int = 0
+    # name -> factory for the extra tool clients feedback can read through
+    channels: dict[str, Callable[[], Toolbox]] = field(default_factory=dict)
+    # grades the world at a checkpoint: answer -> {"outcome", "reason"}
+    on_checkpoint: Callable[[str | None], dict] | None = None
+    checkpoints: list[dict] = field(default_factory=list)
+    reviews: list[dict] = field(default_factory=list)
+    # per-trial scratch space for harness components
+    memory: dict = field(default_factory=dict)
+    _open: dict[str, Toolbox] = field(default_factory=dict)
+
+    def channel(self, name: str) -> Toolbox:
+        """The tool client for a channel, opened on first use. Without a factory,
+        "review" falls back to the agent's own client."""
+        if name == "agent":
+            return self.toolbox
+        if name not in self._open:
+            factory = self.channels.get(name)
+            if factory is None:
+                if name == "review":
+                    return self.toolbox
+                raise ValueError(f"no {name} channel in this context")
+            self._open[name] = factory()
+        return self._open[name]
+
+    @property
+    def toolboxes(self) -> list[Toolbox]:
+        return [self.toolbox, *self._open.values()]
+
+    def usage(self) -> dict:
+        tbs = self.toolboxes
+        return {
+            "tool_calls": sum(t.call_count for t in tbs),
+            "tool_errors": sum(t.error_count for t in tbs),
+            "retries": sum(t.retries for t in tbs),
+            "llm_calls": self.llm_calls,
+            "tokens": self.tokens,
+        }
+
+    def checkpoint(self, label: str, answer: str | None):
+        """Record where the trial stands, e.g. the agent's first answer before
+        feedback, graded against the world if the runner can grade it."""
+        record = {"label": label, **self.usage()}
+        if self.on_checkpoint is not None:
+            record.update(self.on_checkpoint(answer))
+        self.checkpoints.append(record)
+        self.toolbox.log("checkpoint", payload=record)
 
     def complete(self, messages: list[dict], tools: list[dict], system: str, role: str = "agent") -> Reply:
         reply = self.backend.complete(messages, tools, system)
@@ -45,12 +92,13 @@ class Conversation:
     each model call."""
 
     def __init__(self, ctx: AgentContext, system: str, tool_names: list[str] | None = None, role: str = "agent",
-                 state=None):
+                 state=None, toolbox: Toolbox | None = None):
         self.ctx = ctx
         self.system = system
         self.role = role
         self.tool_names = tool_names
-        self.tools = ctx.toolbox.llm_tools(tool_names)
+        self.toolbox = toolbox or ctx.toolbox
+        self.tools = self.toolbox.llm_tools(tool_names)
         self.messages: list[dict] = []
         self.state = state
         self._shown = ""
@@ -77,9 +125,9 @@ class Conversation:
             self.messages.append({"role": "assistant", "reply": reply})
             results = []
             for call in reply.calls:
-                body, is_error = self.ctx.toolbox.call(call.name, call.args, allowed=self.tool_names)
+                body, is_error = self.toolbox.call(call.name, call.args, allowed=self.tool_names)
                 if self.state is not None:
-                    self.state.observe(call.name, call.args, body, self.ctx.toolbox.last_status)
+                    self.state.observe(call.name, call.args, body, self.toolbox.last_status)
                 results.append({"call": call, "body": body, "is_error": is_error})
             self.messages.append({"role": "tool", "results": results})
         raise StepBudgetExceeded()

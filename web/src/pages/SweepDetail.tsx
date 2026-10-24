@@ -2,9 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import { JobStatus, OutcomeStatus } from "../components/Badges";
+import { AttributionPanel, ComparisonsPanel, FeedbackPanel, SpreadPanel, VersionNotes } from "../components/HarnessAnalysis";
 import { Heatmap, HeatmapLegend } from "../components/Heatmap";
 import { Fault, Stop } from "../components/Icons";
 import { OUTCOME_SHORT, compact, ms, pct, when } from "../format";
+import { CAUSE_LABEL } from "../harness";
 import { useFetch } from "../hooks";
 import type { SweepSummary, Tally, TrialRow } from "../types";
 
@@ -119,6 +121,7 @@ export function SweepDetail() {
       </div>
 
       <Progress summary={s} />
+      <VersionNotes s={s} />
 
       {s.graded === 0 ? (
         <div className="panel">
@@ -147,6 +150,11 @@ export function SweepDetail() {
               </p>
             </div>
           </div>
+
+          <SpreadPanel s={s} />
+          <ComparisonsPanel s={s} />
+          <AttributionPanel s={s} />
+          <FeedbackPanel s={s} />
 
           <div className="grid-2">
             <div className="panel">
@@ -326,6 +334,7 @@ export function SweepDetail() {
                     <th className="r">rep</th>
                     <th>fault</th>
                     <th className="r">calls</th>
+                    <th>cause</th>
                     <th>reason</th>
                   </tr>
                 </thead>
@@ -347,6 +356,16 @@ export function SweepDetail() {
                       <td className="r num">{t.repeat_idx}</td>
                       <td>{t.fault_fired ? <span className="status warning" title="a fault was injected"><Fault size={12} /> hit</span> : <span className="muted">–</span>}</td>
                       <td className="r num">{t.tool_calls}</td>
+                      <td style={{ fontSize: 12.5 }} title={t.attribution?.evidence}>
+                        {t.attribution ? (
+                          <>
+                            {CAUSE_LABEL[t.attribution.cause] ?? t.attribution.cause}
+                            {t.attribution.subsystem && <span className="muted"> · {t.attribution.subsystem}</span>}
+                          </>
+                        ) : (
+                          <span className="muted">–</span>
+                        )}
+                      </td>
                       <td className="secondary" style={{ fontSize: 12.5, maxWidth: 420 }}>
                         {t.reason}
                       </td>

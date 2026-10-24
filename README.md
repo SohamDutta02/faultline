@@ -162,7 +162,7 @@ measured on its own.
 | instructions | the system prompt | `base`; `fault_aware`: how the tools fail and what to trust |
 | tools | the tool interface and the client that calls it | `plain`; `retrying`: retries reads on 429/5xx/timeouts/unparseable bodies, writes only on 429 |
 | environment | the world the tools act on, and its guarantees | `bare`; `idempotent`: writes carry an idempotency key, so a repeat returns the first result instead of acting twice |
-| state | what the harness tracks between steps | `transcript`: the conversation only |
+| state | what the harness tracks between steps | `transcript`: the conversation only; `ledger`: a harness-kept record of write outcomes and contradictory reads, shown to the model every turn |
 | feedback | how work is checked before it counts as done | `none`; `critic`: a read-only LLM reviewer that can send the work back, up to two revisions |
 
 Presets name common harnesses:
@@ -187,6 +187,15 @@ trial, the tool and its arguments), the toolserver performs each keyed write
 at most once, the tool descriptions say so, and the retrying client can retry
 writes like reads. The trade-off: two identical writes in one trial collapse
 into one.
+
+The `ledger` is rebuilt from the agent's own calls and responses (never from
+the proxy's fault headers). It records each write as done, rejected, not
+executed (429), or unknown (5xx, timeout, unreadable body) until a
+`list_orders` read settles whether it went through. It warns when a write went
+through more than once, when two reads disagree with no write in between that
+explains it, and when a read came back unreadable. It is appended to the
+system prompt before each model call, and logged as a `state` event whenever
+it changes.
 
 Every harness has a fingerprint: a hash of its prompts, tool schemas, client
 policy and option versions, but not the model. Two ids for the same harness

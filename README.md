@@ -29,14 +29,21 @@ work, snapshots it again, and runs task-specific checks against both snapshots.
 `python -m api` serves everything on http://127.0.0.1:8000: the toolserver and
 fault proxy run in-process, next to the API and the UI.
 
-- **Playground**: pick a task, an architecture and a fault config, run one
-  trial and watch it stream. Every tool call shows its status, latency, the
-  fault the proxy injected and any client retries; the verdict panel shows the
-  checks, the final answer, the cost and a diff of the world.
-- **Sweeps**: launch, follow and stop sweeps, then read them as a pass-rate
-  heatmap by fault config and architecture. Select a cell to list its trials,
-  and open any trial to replay its trace.
-- **Catalog**: the trial pipeline, fault configs, tasks and architectures.
+- **Playground**: pick a task, a harness (a preset, or built slot by slot)
+  and a fault config, run one trial and watch it stream. Every tool call shows
+  its status, latency, the fault the proxy injected, any client retries and
+  which channel made it; the trace also shows the harness state the model was
+  shown, the first answer's grade and each feedback round. The verdict panel
+  shows why a failure happened, what feedback changed, the checks, the final
+  answer, the cost and a diff of the world.
+- **Sweeps**: launch (optionally with an ablation), follow and stop sweeps,
+  then read them as a pass-rate heatmap by fault config and architecture,
+  plus harness spread, controlled comparisons and interactions, failure
+  attribution and feedback outcomes. Select a cell to list its trials, and
+  open any trial to replay its trace.
+- **Compare**: two sweeps cell by cell, with what changed in each harness.
+- **Catalog**: the trial pipeline, fault configs, tasks, the harness
+  subsystems and presets, and a live harness audit.
 
 The scripted architectures work without an API key, so the whole app is
 usable offline; the model-driven ones unlock once `GEMINI_API_KEY` is set.
@@ -100,6 +107,10 @@ The default sweep is 6 tasks x 3 LLM architectures x 7 fault configs x 3
 repeats = 378 trials, with `--pace 15` seconds between LLM trials for free-tier
 rate limits. Narrow it with `--tasks`, `--archs`, `--configs`, `--repeats`.
 
+`--ablate HARNESS` adds a controlled-variable set around a harness (see
+[Ablations and attribution](#ablations-and-attribution)); `--ablate full` is 12
+harnesses, so narrow the rest of the matrix to keep it affordable.
+
 Sweeps are resumable: rerun with the same `--label` and only missing cells run.
 Cells run repeat-major, so a sweep stopped halfway has every cell at the same
 depth. Model API failures (quota, network) are recorded as `fail_harness`,
@@ -161,9 +172,9 @@ measured on its own.
 |---|---|---|
 | instructions | the system prompt | `base`; `fault_aware`: how the tools fail and what to trust |
 | tools | the tool interface and the client that calls it | `plain`; `retrying`: retries reads on 429/5xx/timeouts/unparseable bodies, writes only on 429 |
-| environment | the world the tools act on, and its guarantees | `bare` |
-| state | what the harness tracks between steps | `transcript`: the conversation only |
-| feedback | how work is checked before it counts as done | `none`; `critic`: a read-only LLM reviewer that can send the work back, up to two revisions |
+| environment | the world the tools act on, and its guarantees | `bare`; `idempotent`: writes carry an idempotency key, so a repeat returns the first result instead of acting twice |
+| state | what the harness tracks between steps | `transcript`: the conversation only; `ledger`: a harness-kept record of write outcomes and contradictory reads, shown to the model every turn |
+| feedback | how work is checked before it counts as done | `none`; `critic`: a read-only LLM reviewer that can send the work back, up to two revisions; `checks`: deterministic verification with no model; `critic_independent`, `checks_independent`: the same, reading ground truth (an upper bound) |
 
 Presets name common harnesses:
 
@@ -172,6 +183,8 @@ Presets name common harnesses:
 | `single` | the baseline: one tool-calling loop, no safety nets |
 | `retry` | `single+tools=retrying` |
 | `critic` | `single+feedback=critic` |
+| `checks` | `single+feedback=checks` |
+| `full` | every subsystem at its strongest deployable option: `fault_aware`, `retrying`, `idempotent`, `ledger`, `checks` |
 | `oracle` | no model: a scripted per-task policy with no retries; the control column, and lets the pipeline run without a key |
 | `oracle_retry` | the oracle on the retrying client: what client retries alone buy, with no model involved |
 
@@ -183,6 +196,52 @@ is `single`. The scripted controls only take edits to `tools` and `environment`.
 Every harness has a fingerprint: a hash of its prompts, tool schemas, client
 policy and option versions, but not the model. Two ids for the same harness
 share a fingerprint.
+
+### Environment
+
+The fault configs are what the experiment does to the environment; the
+environment slot is what the harness designer chooses about it. Under
+`idempotent` the client sends a `request_id` with every write (a hash of the
+trial, the tool and its arguments), the toolserver performs each keyed write
+at most once, the tool descriptions say so, and the retrying client can retry
+writes like reads. The trade-off: two identical writes in one trial collapse
+into one.
+
+### State
+
+The `ledger` is rebuilt from the agent's own calls and responses (never from
+the proxy's fault headers). It records each write as done, rejected, not
+executed (429), or unknown (5xx, timeout, unreadable body) until a
+`list_orders` read settles whether it went through. It warns when a write went
+through more than once, when two reads disagree with no write in between that
+explains it, and when a read came back unreadable. It is appended to the
+system prompt before each model call, and logged as a `state` event whenever
+it changes.
+
+### Feedback
+
+`checks` is the harness's verification command: no model, a handful of reads,
+and the same revise loop as the critic. From the agent's own calls it finds
+writes that returned an error but went through (or didn't), orders placed more
+than once, and facts that a fresh read contradicts once the agent's own orders
+are accounted for. A wrong fact is reported once (the agent can't un-read it,
+only stop relying on it); problems with orders are reported until they're
+fixed. The checks are calibrated in the test suite: zero false alarms on the
+oracle's correct runs of every task, through either channel.
+
+Feedback reads through a channel. `critic` and `checks` read through the same
+fault proxy as the agent, so a fault that fools the agent can fool the check:
+a stale stock level re-reads stale. The `_independent` variants read the
+toolserver directly. Real agents don't always have an independent source of
+truth, so treat those as an upper bound on what feedback can buy, and the gap
+between the two as the value of independence. Trace events carry the channel
+(`agent`, `review`, `truth`).
+
+Every harness with feedback grades the world at the moment the agent first
+says it's done, before any review (a `checkpoint` event), so each trial
+records what feedback actually changed: whether it fixed a failing answer,
+broke a passing one, raised a false alarm or missed a failure, and what the
+review cost.
 
 ## Outcomes
 
@@ -205,27 +264,125 @@ share a fingerprint.
   (the targeted tool was never called, or traffic bypassed the proxy);
 - **outcomes** and **mean cost** (tool calls, tool errors, client retries, LLM
   calls, tokens, seconds) per architecture;
+- **feedback: first answer vs final** for harnesses with feedback: first-pass
+  and final pass rates, answers fixed and broken, flags, false alarms, misses,
+  and the extra tool calls and tokens the review cost;
+- **harness spread**: the best and the worst model harness per fault config;
+- **controlled comparisons**: every pair of harnesses that differ in exactly
+  one subsystem, with the pass-rate change, the cost change and pass-rate
+  points per 1k extra tokens, by fault config, plus interaction warnings;
+- **failure attribution**: each failure's cause, and the share of failures
+  each subsystem should have prevented;
 - with `--by-task`, a task x config grid per architecture.
 
 `python -m sweep.trials` lists trials by config, arch, task or outcome, and
-`--trial <id>` replays one trial's event log: model turns, tool calls,
-injected faults (`F`), reviewer verdicts.
+`--trial <id>` replays one trial's event log: model turns, tool calls (with
+their channel when it isn't the agent's), injected faults (`F`), harness state
+updates, the first-pass checkpoint and feedback verdicts.
+
+## Ablations and attribution
+
+If it isn't model weights, it's harness: at a fixed model, the **harness
+spread** section shows how far apart the best and worst harness land under
+each fault.
+
+Every pair of harnesses in a sweep that differ in exactly one subsystem is an
+exclusion test for that subsystem. Because every harness in a cell faces the
+same fault schedule, the report pairs their trials cell by cell. `--ablate
+HARNESS` builds the pairs on purpose, in two contexts:
+
+```bash
+python -m sweep.run --label abl --ablate full --configs none timeout stale_data partial_write --serve
+# single, single+<each subsystem full changes>        add-one: what it adds to the baseline
+# full-<each subsystem>, full                         leave-one-out: what full loses without it
+```
+
+Names that spell the same harness are kept once, so `--ablate` on a harness
+that changes two subsystems needs only four harnesses.
+
+When the same change (say tools: plain -> retrying) moves the pass rate by
+very different amounts in different contexts (10 points or more, overall or
+under one fault), the report flags an **interaction**: the subsystem's value
+depends on the rest of the harness, and neither ablation number is its value
+on its own. The scripted controls show one with no model involved
+(`--ablate oracle_retry+environment=idempotent`, 3 repeats):
+
+| change | context | pass, all faults | under timeout |
+|---|---|---:|---:|
+| environment: bare -> idempotent | `oracle` (no retries) | +0 | +0 |
+| environment: bare -> idempotent | `oracle_retry` | +2 | +11 |
+| tools: plain -> retrying | bare environment | +15 | +28 |
+| tools: plain -> retrying | idempotent environment | +17 | +39 |
+
+Idempotent writes are worth nothing to a client that never retries, and the
+retrying client is worth more in an environment where writes are safe to
+repeat. An add-one ablation from the baseline would call the environment
+useless.
+
+Ablation says how much; it doesn't say where the remaining failures come
+from. Each failed trial gets an **attribution** from its trace, world diff
+and feedback checkpoint: a cause, the subsystem whose job it was to prevent
+it, and the evidence.
+
+| cause | subsystem | what happened |
+|---|---|---|
+| `crash` | | the harness raised: a bug |
+| `feedback_broke_it` | feedback | the first answer passed; after review it didn't |
+| `loop` | state | step budget exhausted |
+| `duplicate_write` | state | a write errored but went through, then was repeated (instructions if there was no error) |
+| `lost_write` | tools | a write errored and never went through |
+| `trusted_bad_data` | feedback | a read was altered and nothing caught it |
+| `gave_up_on_errors` | tools | transport or schema errors that were never recovered |
+| `misread_write` | state | a write reported failure but went through, and the agent acted on the failure |
+| `reasoning_error` | instructions | wrong with no unrecovered fault (or the model's limit) |
+
+Attributions are stored with each trial; `python -m sweep.attribution --label X`
+recomputes them for a sweep (for one recorded before this existed, or after
+the rules change).
+
+## Harness rot
+
+A harness rots like code: prompts get edited, retry policies tuned, checks
+extended, while the results that describe it stay in the database. Every
+trial records the fingerprint of the harness that produced it (and the
+harness itself, once, in a `harness` table), so drift shows up instead of
+silently mixing into the numbers.
+
+- **Resuming** a sweep whose cells came from an older version of their harness
+  is refused, naming the parts that changed. `--rerun-stale` redoes those
+  cells under the current harness, `--allow-mixed` keeps them. The report
+  warns when an architecture's results come from an older harness or mix
+  versions.
+- **`python -m sweep.compare --base before --head after`** is the regression
+  report for a harness change: pass rates on cells paired across the two
+  sweeps (same fault seeds), which parts of each harness changed, and the
+  cells that moved by 10 points or more (`--threshold`).
+- **`python -m harness.audit`** checks for drift: the tool specs the model sees
+  against the toolserver's real routes, prompts that name tools that don't
+  exist, presets that don't resolve. Against the results database (`--db`, or
+  `faultline.db` if it exists) it also finds options whose code changed
+  without a version bump, so their old results still look current, and
+  presets whose latest results come from an older harness. `--calibrate`
+  verifies the verifier: the `checks` must raise no false alarms on the
+  oracle's correct runs of every task and catch four seeded failures. CI runs
+  `python -m harness.audit --calibrate`; `--strict` fails on warnings too.
 
 ## Control results
 
-The control sweep (`--archs oracle oracle_retry`, 3 repeats, 18 trials per
-cell) is deterministic. It shows what each fault does to a client that knows
-exactly what to do, with and without client retries:
+The control sweep (`--archs oracle oracle_retry oracle_retry+environment=idempotent`,
+3 repeats, 18 trials per cell) is deterministic. It shows what each fault does
+to a client that knows exactly what to do, with and without client retries,
+and with retries in an environment whose writes are idempotent:
 
-| config | oracle | oracle_retry |
-|---|---:|---:|
-| none | 100% | 100% |
-| rate_limit | 50% | 94% |
-| timeout | 44% | 72% |
-| malformed_json | 67% | 100% |
-| stale_data | 67% | 67% |
-| plausible_wrong | 67% | 67% |
-| partial_write | 100% | 100% |
+| config | oracle | oracle_retry | oracle_retry, idempotent env |
+|---|---:|---:|---:|
+| none | 100% | 100% | 100% |
+| rate_limit | 50% | 94% | 94% |
+| timeout | 44% | 72% | 83% |
+| malformed_json | 67% | 100% | 100% |
+| stale_data | 67% | 67% | 67% |
+| plausible_wrong | 67% | 67% | 67% |
+| partial_write | 100% | 100% | 100% |
 
 Retries recover rate limits and corrupted bodies almost entirely. They recover
 timeouts only on reads: a write that timed out might have committed, so the
@@ -234,6 +391,10 @@ still fail. Semantic faults are untouched, since a stale or wrong value
 re-reads the same way. Partial writes never hurt a client that doesn't retry
 blindly: that failure mode belongs to agents that do, which is what the model
 architectures are measured on.
+
+Making writes idempotent is an environment change, not a client change, and it
+recovers most of the timed-out writes: the retrying client can now resend them
+safely. What's left are calls that timed out on all three attempts.
 
 ## Extending
 
@@ -259,9 +420,10 @@ toolserver/   seeded warehouse world and six tool endpoints (FastAPI)
 proxy/        fault-injecting reverse proxy, fault classes, configs
 tasks/        task catalog, checks, verifier
 agents/       LLM backend, toolbox clients, agent loop, oracle, architecture registry
-harness/      the five harness subsystems, presets, harness names, fingerprints
+harness/      the five harness subsystems, presets, harness names, fingerprints, deterministic checks, audit
 runner/       single-trial runner, in-process server stack
-sweep/        sweep runner, SQLite store, report, trial inspector
+sweep/        sweep runner, SQLite store, report, controlled comparisons, failure attribution, harness
+              versions, sweep comparison, trial inspector
 api/          FastAPI app: catalog, live trial streams (SSE), sweep control
 web/          React + TypeScript UI (Vite)
 tests/        offline pytest suite

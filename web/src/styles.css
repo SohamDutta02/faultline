@@ -781,7 +781,7 @@ tr.clickable:hover td {
   text-align: center;
   padding: 0 4px 4px;
   align-self: end;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .heatmap .hm-row {
   font-family: var(--mono);
@@ -974,4 +974,42 @@ input:disabled,
 select:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* harness builder and trace additions */
+.harness-id {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 6px;
+  border-top: 1px solid var(--grid);
+}
+.harness-id code {
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+.state-text {
+  margin: 6px 0 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  color: var(--ink-2);
+}
+.delta.good {
+  color: var(--good-text);
+}
+.delta.critical {
+  color: var(--critical-text);
+}
+.findings li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 4px 0;
+}
+.findings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }

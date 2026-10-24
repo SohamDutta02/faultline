@@ -37,8 +37,13 @@ def _summary(kind: str, payload: dict) -> str:
         calls = ", ".join(f"{c['name']}({json.dumps(c['args'], sort_keys=True)})" for c in payload.get("calls", []))
         text = payload.get("text", "").replace("\n", " ")[:160]
         return f"{payload.get('tokens', 0)} tok  " + (f"calls {calls}" if calls else f"says {text!r}")
-    if kind == "critic":
-        return f"round {payload.get('round')}: {payload.get('verdict')}  {payload.get('review', '')[:160]!r}"
+    if kind in ("critic", "feedback"):
+        source = payload.get("source", "critic")
+        return f"{source} round {payload.get('round')}: {payload.get('verdict')}  {payload.get('review', '')[:160]!r}"
+    if kind == "checkpoint":
+        return f"{payload.get('label')}: {payload.get('outcome', '?')}  {payload.get('reason', '')[:140]}"
+    if kind == "state":
+        return payload.get("text", "").replace("\n", " | ")[:200]
     if kind == "crash":
         return payload.get("traceback", "")[-300:]
     return json.dumps(payload)[:200]
@@ -63,7 +68,9 @@ def show_trial(conn, prefix: str):
     for e in events:
         flag = "F" if e["fault_injected"] else " "
         payload = json.loads(e["payload"]) if e["payload"] else {}
-        print(f"{e['step_idx']:>3} {flag} {e['kind']:11} {e['tool_name'] or '':16} {_summary(e['kind'], payload)}")
+        channel = e["channel"] if "channel" in e.keys() and e["channel"] and e["channel"] != "agent" else ""
+        print(f"{e['step_idx']:>3} {flag} {e['kind']:11} {channel:6} {e['tool_name'] or '':16} "
+              f"{_summary(e['kind'], payload)}")
 
 
 def main(argv=None):

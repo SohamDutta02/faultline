@@ -34,6 +34,7 @@ export function Header() {
           Playground
         </NavLink>
         <NavLink to="/sweeps">Sweeps</NavLink>
+        <NavLink to="/compare">Compare</NavLink>
         <NavLink to="/catalog">Catalog</NavLink>
       </nav>
       <div className="topbar-right">

@@ -163,7 +163,7 @@ measured on its own.
 | tools | the tool interface and the client that calls it | `plain`; `retrying`: retries reads on 429/5xx/timeouts/unparseable bodies, writes only on 429 |
 | environment | the world the tools act on, and its guarantees | `bare`; `idempotent`: writes carry an idempotency key, so a repeat returns the first result instead of acting twice |
 | state | what the harness tracks between steps | `transcript`: the conversation only; `ledger`: a harness-kept record of write outcomes and contradictory reads, shown to the model every turn |
-| feedback | how work is checked before it counts as done | `none`; `critic`: a read-only LLM reviewer that can send the work back, up to two revisions |
+| feedback | how work is checked before it counts as done | `none`; `critic`: a read-only LLM reviewer that can send the work back, up to two revisions; `checks`: deterministic verification with no model; `critic_independent`, `checks_independent`: the same, reading ground truth (an upper bound) |
 
 Presets name common harnesses:
 
@@ -180,6 +180,12 @@ and `-slot` resets it to the baseline. `critic+instructions=fault_aware` is a
 valid architecture id anywhere one is accepted (CLI, API, UI), and `retry-tools`
 is `single`. The scripted controls only take edits to `tools` and `environment`.
 
+Every harness has a fingerprint: a hash of its prompts, tool schemas, client
+policy and option versions, but not the model. Two ids for the same harness
+share a fingerprint.
+
+### Environment
+
 The fault configs are what the experiment does to the environment; the
 environment slot is what the harness designer chooses about it. Under
 `idempotent` the client sends a `request_id` with every write (a hash of the
@@ -187,6 +193,8 @@ trial, the tool and its arguments), the toolserver performs each keyed write
 at most once, the tool descriptions say so, and the retrying client can retry
 writes like reads. The trade-off: two identical writes in one trial collapse
 into one.
+
+### State
 
 The `ledger` is rebuilt from the agent's own calls and responses (never from
 the proxy's fault headers). It records each write as done, rejected, not
@@ -197,9 +205,30 @@ explains it, and when a read came back unreadable. It is appended to the
 system prompt before each model call, and logged as a `state` event whenever
 it changes.
 
-Every harness has a fingerprint: a hash of its prompts, tool schemas, client
-policy and option versions, but not the model. Two ids for the same harness
-share a fingerprint.
+### Feedback
+
+`checks` is the harness's verification command: no model, a handful of reads,
+and the same revise loop as the critic. From the agent's own calls it finds
+writes that returned an error but went through (or didn't), orders placed more
+than once, and facts that a fresh read contradicts once the agent's own orders
+are accounted for. A wrong fact is reported once (the agent can't un-read it,
+only stop relying on it); problems with orders are reported until they're
+fixed. The checks are calibrated in the test suite: zero false alarms on the
+oracle's correct runs of every task, through either channel.
+
+Feedback reads through a channel. `critic` and `checks` read through the same
+fault proxy as the agent, so a fault that fools the agent can fool the check:
+a stale stock level re-reads stale. The `_independent` variants read the
+toolserver directly. Real agents don't always have an independent source of
+truth, so treat those as an upper bound on what feedback can buy, and the gap
+between the two as the value of independence. Trace events carry the channel
+(`agent`, `review`, `truth`).
+
+Every harness with feedback grades the world at the moment the agent first
+says it's done, before any review (a `checkpoint` event), so each trial
+records what feedback actually changed: whether it fixed a failing answer,
+broke a passing one, raised a false alarm or missed a failure, and what the
+review cost.
 
 ## Outcomes
 
@@ -222,11 +251,15 @@ share a fingerprint.
   (the targeted tool was never called, or traffic bypassed the proxy);
 - **outcomes** and **mean cost** (tool calls, tool errors, client retries, LLM
   calls, tokens, seconds) per architecture;
+- **feedback: first answer vs final** for harnesses with feedback: first-pass
+  and final pass rates, answers fixed and broken, flags, false alarms, misses,
+  and the extra tool calls and tokens the review cost;
 - with `--by-task`, a task x config grid per architecture.
 
 `python -m sweep.trials` lists trials by config, arch, task or outcome, and
-`--trial <id>` replays one trial's event log: model turns, tool calls,
-injected faults (`F`), reviewer verdicts.
+`--trial <id>` replays one trial's event log: model turns, tool calls (with
+their channel when it isn't the agent's), injected faults (`F`), harness state
+updates, the first-pass checkpoint and feedback verdicts.
 
 ## Control results
 

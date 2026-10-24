@@ -109,6 +109,10 @@ class Event:
     fault_injected: bool = False
     latency_ms: int = 0
     payload: dict = field(default_factory=dict)
+    # which client made the call: "agent" (the actor, through the proxy),
+    # "review" (feedback reads through the proxy) or "truth" (feedback reads
+    # straight from the toolserver)
+    channel: str = "agent"
 
 
 @dataclass
@@ -137,8 +141,13 @@ class Toolbox:
     toolbox's nonce, the tool and its arguments, so the toolserver performs the
     same write at most once per trial however often it is sent."""
 
-    def __init__(self, base_url: str | None = None, timeout: float = 20.0, on_event=None, idempotent: bool = False):
+    def __init__(self, base_url: str | None = None, timeout: float = 20.0, on_event=None, idempotent: bool = False,
+                 sink: "Toolbox | None" = None, channel: str = "agent"):
         self.base_url = base_url or settings.PROXY_URL
+        # a toolbox with a sink logs into the sink's event log (tagged with its
+        # channel) so one trial has one ordered trace; its counters stay its own
+        self.sink = sink
+        self.channel = channel
         self.idempotent = idempotent
         self.nonce = uuid.uuid4().hex[:8]
         self.client = httpx.Client(timeout=timeout)
@@ -150,6 +159,10 @@ class Toolbox:
         self.last_status: int | None = None  # status of the most recent call(), for harness state
 
     def log(self, kind: str, **kw):
+        if self.sink is not None:
+            kw.setdefault("channel", self.channel)
+            return self.sink.log(kind, **kw)
+        kw.setdefault("channel", self.channel)
         event = Event(step_idx=len(self.events), kind=kind, **kw)
         self.events.append(event)
         if self.on_event is not None:

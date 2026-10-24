@@ -59,7 +59,8 @@ PRESETS = {
     p.id: p
     for p in [
         Preset("single", BASELINE, "one tool-calling loop, no safety nets"),
-        Preset("retry", BASELINE.edit(tools="retrying"), "single + client-side retries for transport and schema faults"),
+        Preset("retry", BASELINE.edit(tools="retrying"),
+               "single + client-side retries for transport and schema faults"),
         Preset("critic", BASELINE.edit(feedback="critic"), "single + read-only reviewer that can send the work back"),
     ]
 }

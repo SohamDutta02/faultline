@@ -39,9 +39,9 @@ class Architecture:
     def slots(self) -> tuple[str, ...]:
         return SLOTS if self.needs_llm else SCRIPTED_SLOTS
 
-    def make_toolbox(self, base_url: str, on_event=None) -> Toolbox:
+    def make_toolbox(self, base_url: str, on_event=None, **kw) -> Toolbox:
         env = option("environment", self.spec.environment).impl
-        return self.toolbox(base_url, on_event=on_event, idempotent=env["idempotent"])
+        return self.toolbox(base_url, on_event=on_event, idempotent=env["idempotent"], **kw)
 
     def manifest(self) -> dict:
         policy = {"id": self.policy, "version": oracle.VERSION} if self.policy == "oracle" else None

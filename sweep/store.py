@@ -59,7 +59,9 @@ MIGRATIONS = {
         "duration_ms": "integer",
         "checks": "text",
         "world_diff": "text",
+        "feedback": "text",
     },
+    "trial_event": {"channel": "text"},
 }
 
 
@@ -135,25 +137,26 @@ def record(conn, sweep_id: str, fault_config: str, repeat_idx: int, seed: int, r
         """insert into trial
            (id, sweep_id, task_id, architecture_id, fault_config, repeat_idx, seed,
             outcome, reason, fault_fired, tool_calls, tool_errors, retries, llm_calls,
-            tokens_used, duration_ms, answer, checks, world_diff, created_at)
-           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            tokens_used, duration_ms, answer, checks, world_diff, feedback, created_at)
+           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             trial_id, sweep_id, result.task_id, result.architecture_id, fault_config,
             repeat_idx, seed, result.outcome, result.reason, int(result.fault_fired),
             result.tool_calls, result.tool_errors, result.retries, result.llm_calls,
             result.tokens_used, result.duration_ms, result.answer,
-            json.dumps(result.checks), json.dumps(result.world_diff), now(),
+            json.dumps(result.checks), json.dumps(result.world_diff),
+            json.dumps(result.feedback) if getattr(result, "feedback", None) else None, now(),
         ),
     )
     conn.executemany(
         """insert into trial_event
-           (trial_id, step_idx, kind, tool_name, fault_injected, latency_ms, payload)
-           values (?,?,?,?,?,?,?)""",
+           (trial_id, step_idx, kind, tool_name, fault_injected, latency_ms, payload, channel)
+           values (?,?,?,?,?,?,?,?)""",
         [
             (
                 trial_id, e["step_idx"], e["kind"], e.get("tool_name"),
                 int(e.get("fault_injected", False)), e.get("latency_ms", 0),
-                json.dumps(e.get("payload", {}))[:4000],
+                json.dumps(e.get("payload", {}))[:4000], e.get("channel") or "agent",
             )
             for e in result.events
         ],
@@ -213,15 +216,17 @@ def get_trial(conn, trial_id: str) -> dict | None:
     trial = dict(row)
     trial["checks"] = json.loads(trial["checks"]) if trial.get("checks") else []
     trial["world_diff"] = json.loads(trial["world_diff"]) if trial.get("world_diff") else None
+    trial["feedback"] = json.loads(trial["feedback"]) if trial.get("feedback") else None
     sweep = conn.execute("select label from sweep where id = ?", (trial["sweep_id"],)).fetchone()
     trial["sweep_label"] = sweep["label"] if sweep else None
     events = conn.execute(
-        "select step_idx, kind, tool_name, fault_injected, latency_ms, payload from trial_event "
+        "select step_idx, kind, tool_name, fault_injected, latency_ms, payload, channel from trial_event "
         "where trial_id = ? order by step_idx",
         (trial_id,),
     ).fetchall()
     trial["events"] = [
-        {**dict(e), "fault_injected": bool(e["fault_injected"]), "payload": _load(e["payload"])}
+        {**dict(e), "fault_injected": bool(e["fault_injected"]), "payload": _load(e["payload"]),
+         "channel": e["channel"] or "agent"}
         for e in events
     ]
     return trial

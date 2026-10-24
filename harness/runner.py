@@ -18,11 +18,15 @@ def run(task: Task, ctx: AgentContext, spec: HarnessSpec) -> str | None:
     if feedback is None:
         return answer
 
+    # grade the first answer before feedback touches it, so the trial records
+    # what feedback actually changed
+    ctx.checkpoint("first_pass", answer)
     for round_idx in range(feedback.max_rounds):
         review = feedback.review(task, ctx, actor, answer)
-        ctx.toolbox.log(
-            "critic", payload={"round": round_idx, "verdict": review.verdict, "review": review.message[:1500]}
-        )
+        ctx.reviews.append({"round": round_idx, "verdict": review.verdict})
+        ctx.toolbox.log("feedback", payload={
+            "source": spec.feedback, "round": round_idx, "verdict": review.verdict, "review": review.message[:1500],
+        })
         if review.verdict != "revise":
             break
         answer = actor.say(REVISE.format(review=review.message), ctx.max_steps)

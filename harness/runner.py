@@ -6,11 +6,12 @@ from tasks.spec import Task
 from .feedback import REVISE
 from .instructions import system_prompt
 from .spec import HarnessSpec
+from .state import make_state
 
 
 def run(task: Task, ctx: AgentContext, spec: HarnessSpec) -> str | None:
     opts = spec.options()
-    actor = Conversation(ctx, system_prompt(spec.instructions))
+    actor = Conversation(ctx, system_prompt(spec.instructions), state=make_state(spec.state))
     answer = actor.say(task.prompt, ctx.max_steps)
 
     feedback = opts["feedback"].impl

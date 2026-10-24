@@ -195,6 +195,7 @@ OPTIONS = {
             "a harness-kept record of every write's outcome and of contradictory reads, shown to the model each turn",
             {"kind": "ledger", "shown": "appended to the system prompt before every model call", "header": HEADER},
             impl=Ledger,
+            code=(WriteRecord, Ledger),
         ),
     ]
 }

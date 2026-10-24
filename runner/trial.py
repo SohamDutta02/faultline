@@ -39,6 +39,8 @@ class TrialResult:
     feedback: dict | None = None
     # for failed trials: {"cause", "subsystem", "evidence", "also", "notes"} (sweep/attribution.py)
     attribution: dict | None = None
+    # the harness that produced it: {"fingerprint", "manifest", "code"}
+    harness: dict | None = None
 
 
 def prepare_world(admin: httpx.Client, task: Task) -> dict:
@@ -124,6 +126,7 @@ def run_trial(
         checks=[asdict(c) for c in verdict.checks],
         world_diff=world_diff(before, after),
         feedback=feedback,
+        harness=arch.record(),
     )
     result.attribution = attribute(asdict(result))
     return result

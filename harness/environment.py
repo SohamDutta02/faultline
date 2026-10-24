@@ -3,7 +3,8 @@
 The fault configs are what the experiment does to the environment; this slot
 is what the harness designer chooses about it."""
 
-from agents.toolbox import IDEMPOTENT_NOTES
+from agents.toolbox import IDEMPOTENT_NOTES, Toolbox
+from toolserver.state import World
 
 from .base import Option
 
@@ -22,6 +23,7 @@ OPTIONS = {
                 "tool_notes": IDEMPOTENT_NOTES,
             },
             impl={"idempotent": True},
+            code=(Toolbox.request_id, Toolbox._params, World._replay, World._remember),
         ),
     ]
 }

@@ -15,7 +15,7 @@ from runner.stack import local_stack
 from runner.trial import arch_id, run_trial
 from tasks.catalog import BY_ID, CATALOG
 
-from . import store
+from . import store, versions
 
 FAULT_CONFIGS = ["none", "rate_limit", "timeout", "malformed_json", "stale_data", "plausible_wrong", "partial_write"]
 # the default sweep's architectures; --ablate builds a controlled-variable set instead
@@ -142,6 +142,25 @@ def execute(
     return "done"
 
 
+class StaleHarness(SystemExit):
+    pass
+
+
+def check_versions(conn, sweep_id: str, archs: list[str], on_stale: str, label: str = ""):
+    """Before resuming: refuse (by default) to add trials from today's harness to
+    cells recorded by an older version of it, so a sweep never silently mixes them."""
+    stale = [s for s in versions.staleness(conn, sweep_id, archs) if s["stale"]]
+    if not stale:
+        return
+    for s in stale:
+        print(f"harness changed: {versions.describe(s)}")
+    if on_stale == "refuse":
+        raise StaleHarness(
+            f"sweep {label} has results from older harness versions. Re-run with --rerun-stale to redo those "
+            "cells under the current harness, --allow-mixed to keep them, or start a new --label.")
+    print("re-running the stale cells" if on_stale == "rerun" else "keeping them: results will mix harness versions")
+
+
 def build_parser():
     ap = argparse.ArgumentParser(description="run every (task, architecture, fault config, repeat) cell")
     ap.add_argument("--label", required=True, help="sweep name; rerun with the same label to resume")
@@ -156,6 +175,12 @@ def build_parser():
                          "subsystem HARNESS changes, HARNESS minus each, and HARNESS (e.g. --ablate full)")
     ap.add_argument("--tasks", nargs="*", default=[t.id for t in CATALOG], choices=sorted(BY_ID))
     ap.add_argument("--max-steps", type=int, default=12)
+    stale = ap.add_mutually_exclusive_group()
+    stale.add_argument("--rerun-stale", dest="on_stale", action="store_const", const="rerun",
+                       help="when resuming, re-run cells recorded by an older version of their harness")
+    stale.add_argument("--allow-mixed", dest="on_stale", action="store_const", const="mix",
+                       help="when resuming, keep cells from older harness versions (results will mix versions)")
+    ap.set_defaults(on_stale="refuse")
     ap.add_argument("--serve", action="store_true", help="run the toolserver and proxy in-process")
     ap.add_argument("--db", default=None, help=f"sqlite path (default {store.DB_PATH})")
     return ap
@@ -196,8 +221,12 @@ def main(argv=None):
         if existing and backend and existing["model_id"] not in (model_id, "none"):
             print(f"warning: sweep {args.label} was started with {existing['model_id']}, now running {model_id}")
         params = {"archs": args.archs, "configs": args.configs, "tasks": args.tasks, "repeats": args.repeats}
+        if existing:
+            check_versions(conn, existing["id"], args.archs, args.on_stale, args.label)
         sweep_id = store.start_sweep(conn, args.label, model_id, args.repeats, params)
-        total, todo = plan(args.repeats, args.configs, args.tasks, args.archs, store.done_cells(conn, sweep_id))
+        current = {a: resolve(a).fingerprint for a in args.archs} if args.on_stale == "rerun" else None
+        done = store.done_cells(conn, sweep_id, current)
+        total, todo = plan(args.repeats, args.configs, args.tasks, args.archs, done)
         print(f"sweep {args.label}: {len(todo)} trials to run ({total - len(todo)} already done), model {model_id}")
 
         try:

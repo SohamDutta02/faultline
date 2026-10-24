@@ -9,16 +9,32 @@ import httpx
 
 import settings
 from agents.llm import LLMError
-from agents.registry import LLM_PRESETS, resolve
+from agents.registry import BadHarness, ablation, resolve
 from proxy.config import available
 from runner.stack import local_stack
 from runner.trial import arch_id, run_trial
 from tasks.catalog import BY_ID, CATALOG
 
-from . import store
+from . import store, versions
 
 FAULT_CONFIGS = ["none", "rate_limit", "timeout", "malformed_json", "stale_data", "plausible_wrong", "partial_write"]
-LLM_ARCHITECTURES = LLM_PRESETS
+# the default sweep's architectures; --ablate builds a controlled-variable set instead
+LLM_ARCHITECTURES = ["single", "retry", "critic"]
+
+
+def ablate_arg(value: str) -> str:
+    try:
+        ablation(value)
+    except BadHarness as exc:
+        raise argparse.ArgumentTypeError(str(exc))
+    return value
+
+
+def choose_archs(archs: list[str] | None, ablate: str | None) -> list[str]:
+    """--archs, plus the ablation set around --ablate; the default set if neither."""
+    if ablate is None:
+        return archs or LLM_ARCHITECTURES
+    return list(dict.fromkeys((archs or []) + ablation(ablate)))
 
 
 def cell_seed(task_id: str, fault_config: str, repeat_idx: int) -> int:
@@ -126,16 +142,45 @@ def execute(
     return "done"
 
 
+class StaleHarness(SystemExit):
+    pass
+
+
+def check_versions(conn, sweep_id: str, archs: list[str], on_stale: str, label: str = ""):
+    """Before resuming: refuse (by default) to add trials from today's harness to
+    cells recorded by an older version of it, so a sweep never silently mixes them."""
+    stale = [s for s in versions.staleness(conn, sweep_id, archs) if s["stale"]]
+    if not stale:
+        return
+    for s in stale:
+        print(f"harness changed: {versions.describe(s)}")
+    if on_stale == "refuse":
+        raise StaleHarness(
+            f"sweep {label} has results from older harness versions. Re-run with --rerun-stale to redo those "
+            "cells under the current harness, --allow-mixed to keep them, or start a new --label.")
+    print("re-running the stale cells" if on_stale == "rerun" else "keeping them: results will mix harness versions")
+
+
 def build_parser():
     ap = argparse.ArgumentParser(description="run every (task, architecture, fault config, repeat) cell")
     ap.add_argument("--label", required=True, help="sweep name; rerun with the same label to resume")
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--pace", type=float, default=15.0, help="seconds between LLM trials (rate limits)")
     ap.add_argument("--configs", nargs="*", default=FAULT_CONFIGS)
-    ap.add_argument("--archs", nargs="*", default=LLM_ARCHITECTURES, type=arch_id,
-                    help="harness presets or edits (single+feedback=critic), or the scripted oracle controls")
+    ap.add_argument("--archs", nargs="*", default=None, type=arch_id,
+                    help="harness presets or edits (single+feedback=critic), or the scripted oracle controls "
+                         f"(default: {' '.join(LLM_ARCHITECTURES)})")
+    ap.add_argument("--ablate", metavar="HARNESS", type=ablate_arg,
+                    help="add a controlled-variable set around HARNESS: the baseline, the baseline plus each "
+                         "subsystem HARNESS changes, HARNESS minus each, and HARNESS (e.g. --ablate full)")
     ap.add_argument("--tasks", nargs="*", default=[t.id for t in CATALOG], choices=sorted(BY_ID))
     ap.add_argument("--max-steps", type=int, default=12)
+    stale = ap.add_mutually_exclusive_group()
+    stale.add_argument("--rerun-stale", dest="on_stale", action="store_const", const="rerun",
+                       help="when resuming, re-run cells recorded by an older version of their harness")
+    stale.add_argument("--allow-mixed", dest="on_stale", action="store_const", const="mix",
+                       help="when resuming, keep cells from older harness versions (results will mix versions)")
+    ap.set_defaults(on_stale="refuse")
     ap.add_argument("--serve", action="store_true", help="run the toolserver and proxy in-process")
     ap.add_argument("--db", default=None, help=f"sqlite path (default {store.DB_PATH})")
     return ap
@@ -153,6 +198,7 @@ def _print_progress(i, n, cell, result, trial_id, note):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    args.archs = choose_archs(args.archs, args.ablate)
 
     unknown = sorted(set(args.configs) - set(available()))
     if unknown:
@@ -175,8 +221,12 @@ def main(argv=None):
         if existing and backend and existing["model_id"] not in (model_id, "none"):
             print(f"warning: sweep {args.label} was started with {existing['model_id']}, now running {model_id}")
         params = {"archs": args.archs, "configs": args.configs, "tasks": args.tasks, "repeats": args.repeats}
+        if existing:
+            check_versions(conn, existing["id"], args.archs, args.on_stale, args.label)
         sweep_id = store.start_sweep(conn, args.label, model_id, args.repeats, params)
-        total, todo = plan(args.repeats, args.configs, args.tasks, args.archs, store.done_cells(conn, sweep_id))
+        current = {a: resolve(a).fingerprint for a in args.archs} if args.on_stale == "rerun" else None
+        done = store.done_cells(conn, sweep_id, current)
+        total, todo = plan(args.repeats, args.configs, args.tasks, args.archs, done)
         print(f"sweep {args.label}: {len(todo)} trials to run ({total - len(todo)} already done), model {model_id}")
 
         try:

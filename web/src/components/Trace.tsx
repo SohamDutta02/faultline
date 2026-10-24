@@ -23,8 +23,18 @@ type Block =
       tokens: number;
       finish: string | null;
     }
-  | { type: "call"; step: number; role: string; tool: string; args: Record<string, unknown>; attempts: Attempt[] }
-  | { type: "review"; step: number; round: number; verdict: string; review: string }
+  | {
+      type: "call";
+      step: number;
+      role: string;
+      channel: string;
+      tool: string;
+      args: Record<string, unknown>;
+      attempts: Attempt[];
+    }
+  | { type: "review"; step: number; source: string; round: number; verdict: string; review: string }
+  | { type: "checkpoint"; step: number; label: string; outcome: string; reason: string }
+  | { type: "state"; step: number; text: string }
   | { type: "crash"; step: number; traceback: string };
 
 /** Fold the flat event log into what a reader follows: model turns and tool calls with their attempts. */
@@ -49,7 +59,10 @@ export function buildBlocks(events: TraceEvent[]): Block[] {
         });
         break;
       case "tool_call":
-        call = { type: "call", step: e.step_idx, role, tool: e.tool_name ?? "?", args: p, attempts: [] };
+        call = {
+          type: "call", step: e.step_idx, role, channel: e.channel ?? "agent", tool: e.tool_name ?? "?",
+          args: p, attempts: [],
+        };
         blocks.push(call);
         break;
       case "tool_result": {
@@ -60,7 +73,10 @@ export function buildBlocks(events: TraceEvent[]): Block[] {
           fault: p.fault ?? (e.fault_injected ? "injected" : null),
         };
         if (!call) {
-          call = { type: "call", step: e.step_idx, role, tool: e.tool_name ?? "?", args: {}, attempts: [] };
+          call = {
+            type: "call", step: e.step_idx, role, channel: e.channel ?? "agent", tool: e.tool_name ?? "?",
+            args: {}, attempts: [],
+          };
           blocks.push(call);
         }
         call.attempts.push(attempt);
@@ -69,9 +85,22 @@ export function buildBlocks(events: TraceEvent[]): Block[] {
       case "retry":
         if (call?.attempts.length) call.attempts[call.attempts.length - 1].retryDelay = p.delay_s;
         break;
-      case "critic":
+      case "critic": // trials recorded before feedback events had a source
+      case "feedback":
         call = null;
-        blocks.push({ type: "review", step: e.step_idx, round: p.round ?? 0, verdict: p.verdict ?? "ok", review: p.review ?? "" });
+        blocks.push({
+          type: "review", step: e.step_idx, source: p.source ?? "critic", round: p.round ?? 0,
+          verdict: p.verdict ?? "ok", review: p.review ?? "",
+        });
+        break;
+      case "checkpoint":
+        call = null;
+        blocks.push({
+          type: "checkpoint", step: e.step_idx, label: p.label ?? "", outcome: p.outcome ?? "", reason: p.reason ?? "",
+        });
+        break;
+      case "state":
+        blocks.push({ type: "state", step: e.step_idx, text: p.text ?? "" });
         break;
       case "crash":
         blocks.push({ type: "crash", step: e.step_idx, traceback: p.traceback ?? "" });
@@ -107,6 +136,11 @@ function Kind({ label, role }: { label: string; role?: string }) {
   );
 }
 
+const CHANNEL_NOTE: Record<string, string> = {
+  review: "feedback read, through the fault proxy",
+  truth: "feedback read, straight from the toolserver (ground truth)",
+};
+
 function CallRow({ block, live, n }: { block: Extract<Block, { type: "call" }>; live: boolean; n: number }) {
   const meta = useMeta();
   const faulted = block.attempts.some((a) => a.fault);
@@ -114,9 +148,14 @@ function CallRow({ block, live, n }: { block: Extract<Block, { type: "call" }>; 
   return (
     <div className={`trace-row${faulted ? " faulted" : ""}`}>
       <div className="trace-step">{n}</div>
-      <Kind label="tool" role={block.role} />
+      <Kind label="tool" role={block.channel !== "agent" ? block.channel : block.role} />
       <div className="trace-main">
         <Signature tool={block.tool} args={block.args} />
+        {CHANNEL_NOTE[block.channel] && (
+          <div className="secondary" style={{ fontSize: 12 }}>
+            {CHANNEL_NOTE[block.channel]}
+          </div>
+        )}
         {block.attempts.map((a, i) => {
           const info = a.fault ? meta.fault_types[a.fault] : undefined;
           return (
@@ -189,11 +228,44 @@ export function Trace({ events, live = false }: { events: TraceEvent[]; live?: b
               </div>
             </div>
           );
+        if (b.type === "checkpoint")
+          return (
+            <div className="trace-row" key={i}>
+              <div className="trace-step">{i + 1}</div>
+              <Kind label="graded" role={b.label.replace("_", " ")} />
+              <div className="trace-main">
+                <div className="verdict-line">
+                  <span className={`status ${b.outcome === "pass" ? "good" : "critical"}`}>
+                    {b.outcome === "pass" ? "first answer passes" : "first answer fails"}
+                  </span>
+                  <span className="secondary" style={{ fontSize: 12 }}>
+                    graded before feedback; the agent never sees this
+                  </span>
+                </div>
+                {b.reason && <div className="secondary" style={{ fontSize: 12.5 }}>{b.reason}</div>}
+              </div>
+            </div>
+          );
+        if (b.type === "state")
+          return (
+            <div className="trace-row" key={i}>
+              <div className="trace-step">{i + 1}</div>
+              <Kind label="state" role="ledger" />
+              <div className="trace-main">
+                <details>
+                  <summary className="secondary" style={{ fontSize: 12.5, cursor: "pointer" }}>
+                    harness state shown to the model from here on
+                  </summary>
+                  <pre className="state-text">{b.text || "(empty)"}</pre>
+                </details>
+              </div>
+            </div>
+          );
         if (b.type === "review")
           return (
             <div className="trace-row" key={i}>
               <div className="trace-step">{i + 1}</div>
-              <Kind label="verdict" role={`review ${b.round + 1}`} />
+              <Kind label="verdict" role={`${b.source} ${b.round + 1}`} />
               <div className="trace-main">
                 <div className="verdict-line">
                   <span className={`status ${b.verdict === "revise" ? "serious" : "good"}`}>

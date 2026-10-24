@@ -5,7 +5,7 @@ import { JobStatus } from "../components/Badges";
 import { Play } from "../components/Icons";
 import { defaultLabel, pct, when } from "../format";
 import { useFetch, useMeta } from "../hooks";
-import type { JobSummary, SweepRow } from "../types";
+import type { Architecture, JobSummary, SweepRow } from "../types";
 
 function Checklist({
   name,
@@ -58,20 +58,35 @@ function NewSweep({ onCancel }: { onCancel: () => void }) {
   const [tasks, setTasks] = useState<string[]>(meta.tasks.map((t) => t.id));
   const [repeats, setRepeats] = useState(3);
   const [pace, setPace] = useState(15);
+  const [ablate, setAblate] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [stale, setStale] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const usesModel = archs.some((a) => meta.architectures.find((x) => x.id === a)?.needs_llm);
-  const total = archs.length * configs.length * tasks.length * repeats;
+  const ablation = useFetch<Architecture[]>(ablate ? `/api/ablation/${encodeURIComponent(ablate)}` : null);
+  const ablated = ablate && ablation.data ? ablation.data : [];
+  const allArchs = [...new Set([...archs, ...ablated.map((a) => a.id)])];
+  const usesModel =
+    archs.some((a) => meta.architectures.find((x) => x.id === a)?.needs_llm) || ablated.some((a) => a.needs_llm);
+  const total = allArchs.length * configs.length * tasks.length * repeats;
 
-  async function start() {
+  async function start(onStale: "refuse" | "rerun" | "mix" = "refuse") {
     setBusy(true);
     setError(null);
+    setStale(null);
     try {
-      await api.post<JobSummary>("/api/sweeps", { label, archs, configs, tasks, repeats, pace: usesModel ? pace : 0 });
+      await api.post<JobSummary>("/api/sweeps", {
+        label, archs, configs, tasks, repeats, pace: usesModel ? pace : 0, ablate: ablate || null, on_stale: onStale,
+      });
       navigate(`/sweeps/${encodeURIComponent(label)}`);
     } catch (e) {
-      setError(e instanceof ApiError && e.status === 409 ? `Busy: ${e.body.job.kind} ${e.body.job.title} is running.` : (e as Error).message);
+      if (e instanceof ApiError && e.status === 409 && e.body?.job) {
+        setError(`Busy: ${e.body.job.kind} ${e.body.job.title} is running.`);
+      } else if (e instanceof ApiError && e.status === 409 && e.body?.detail?.stale) {
+        setStale(e.body.detail.stale as string[]);
+      } else {
+        setError((e as Error).message);
+      }
       setBusy(false);
     }
   }
@@ -103,6 +118,35 @@ function NewSweep({ onCancel }: { onCancel: () => void }) {
             />
           </label>
         </div>
+        <div className="field-row" style={{ alignItems: "flex-start" }}>
+          <label className="field" style={{ minWidth: 260 }}>
+            <span className="label">Ablate a harness</span>
+            <select value={ablate} onChange={(e) => setAblate(e.target.value)}>
+              <option value="">none</option>
+              {meta.architectures
+                .filter((a) => a.id !== "single" && a.id !== "oracle")
+                .map((a) => (
+                  <option key={a.id} value={a.id} disabled={a.needs_llm && !meta.llm_available}>
+                    {a.id}
+                  </option>
+                ))}
+            </select>
+          </label>
+          <div className="secondary" style={{ fontSize: 12.5, flex: 1, paddingTop: 18 }}>
+            {ablate && ablation.data ? (
+              <>
+                Adds {ablation.data.length} harnesses: the baseline, the baseline plus each subsystem{" "}
+                <span className="mono">{ablate}</span> changes, <span className="mono">{ablate}</span> minus each, and{" "}
+                <span className="mono">{ablate}</span>:{" "}
+                <span className="mono">{ablation.data.map((a) => a.id).join(", ")}</span>
+              </>
+            ) : ablation.error ? (
+              <span style={{ color: "var(--critical-text)" }}>{ablation.error}</span>
+            ) : (
+              "Adds controlled-variable harnesses around one harness, so the report can measure each subsystem."
+            )}
+          </div>
+        </div>
         <div className="grid-2" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
           <Checklist
             name="Architectures"
@@ -116,13 +160,25 @@ function NewSweep({ onCancel }: { onCancel: () => void }) {
           <Checklist name="Tasks" items={meta.tasks.map((t) => t.id)} selected={tasks} onChange={setTasks} />
         </div>
         {error && <div className="notice error">{error}</div>}
+        {stale && (
+          <div className="notice">
+            <b>Sweep {label} has results from older harness versions.</b>
+            {stale.map((line) => (
+              <div key={line} style={{ fontSize: 12.5 }}>{line}</div>
+            ))}
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <button className="small" onClick={() => start("rerun")}>Re-run those cells</button>
+              <button className="small" onClick={() => start("mix")}>Keep them and mix versions</button>
+            </div>
+          </div>
+        )}
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <button className="primary" onClick={start} disabled={busy || total === 0}>
+          <button className="primary" onClick={() => start()} disabled={busy || total === 0}>
             <Play size={12} /> Start sweep
           </button>
           <button onClick={onCancel}>Cancel</button>
           <span className="secondary num" style={{ fontSize: 12.5 }}>
-            {archs.length} × {configs.length} × {tasks.length} × {repeats} = {total} trials
+            {allArchs.length} × {configs.length} × {tasks.length} × {repeats} = {total} trials
             {usesModel && total > 1 ? `, at least ${Math.ceil(((total - 1) * pace) / 60)} min of pacing` : ""}
           </span>
         </div>
@@ -142,6 +198,7 @@ export function Sweeps() {
         <h1>Sweeps</h1>
         <span className="secondary">Every task × architecture × fault config, repeated, graded and stored.</span>
         <div className="actions">
+          {sweeps && sweeps.length > 1 && <Link className="button" to="/compare">Compare sweeps</Link>}
           {!creating && (
             <button className="primary" onClick={() => setCreating(true)}>
               New sweep

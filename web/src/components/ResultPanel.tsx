@@ -1,7 +1,61 @@
 import { Link } from "react-router-dom";
 import { compact, ms } from "../format";
-import type { TrialView, WorldDiff } from "../types";
-import { CheckIcon, OutcomeHeadline } from "./Badges";
+import { CAUSE_LABEL } from "../harness";
+import type { Attribution, FeedbackRecord, TrialView, WorldDiff } from "../types";
+import { CheckIcon, OutcomeHeadline, OutcomeStatus } from "./Badges";
+
+function AttributionView({ a }: { a: Attribution }) {
+  return (
+    <div className="stack" style={{ gap: 6 }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "baseline" }}>
+        <b>{CAUSE_LABEL[a.cause] ?? a.cause}</b>
+        {a.subsystem ? (
+          <span className="tag" title="the harness subsystem whose job it was to prevent this">
+            {a.subsystem}
+            {a.also.length > 0 ? ` (or ${a.also.join(", ")})` : ""}
+          </span>
+        ) : (
+          <span className="tag">harness bug</span>
+        )}
+      </div>
+      <div className="secondary" style={{ fontSize: 12.5 }}>{a.evidence}</div>
+      {a.notes.map((n) => (
+        <div key={n} className="secondary" style={{ fontSize: 12.5 }}>
+          Note: {n}.
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function FeedbackView({ fb, final }: { fb: FeedbackRecord; final: TrialView["outcome"] }) {
+  const first = fb.first_pass.outcome;
+  const story =
+    first === "pass" && final !== "pass"
+      ? "Feedback broke a passing answer."
+      : first !== "pass" && final === "pass"
+        ? "Feedback fixed a failing answer."
+        : first === "pass"
+          ? "The first answer passed and stayed passing."
+          : "The first answer failed and feedback didn't fix it.";
+  return (
+    <div className="stack" style={{ gap: 6 }}>
+      <div className="kv" style={{ gap: 12 }}>
+        <span>
+          first answer <OutcomeStatus outcome={first} short />
+        </span>
+        <span>
+          reviews{" "}
+          <b className="mono">{fb.reviews.map((r) => r.verdict).join(" → ") || "none"}</b>
+        </span>
+        <span>
+          by <b className="mono">{fb.option}</b>
+        </span>
+      </div>
+      <div className="secondary" style={{ fontSize: 12.5 }}>{story}</div>
+    </div>
+  );
+}
 
 function Diff({ diff }: { diff: WorldDiff }) {
   const empty = !diff.inventory.length && !diff.orders_added.length && !diff.orders_changed.length;
@@ -113,6 +167,20 @@ export function ResultPanel({ view, running }: { view: TrialView | null; running
             </p>
           )}
         </div>
+
+        {view.attribution && (
+          <div className="section">
+            <span className="label">Why it failed</span>
+            <AttributionView a={view.attribution} />
+          </div>
+        )}
+
+        {view.feedback && (
+          <div className="section">
+            <span className="label">Feedback</span>
+            <FeedbackView fb={view.feedback} final={view.outcome} />
+          </div>
+        )}
 
         {view.checks.length > 0 && (
           <div className="section">

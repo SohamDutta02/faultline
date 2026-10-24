@@ -1,5 +1,51 @@
 import { FaultChip } from "../components/Badges";
-import { useMeta } from "../hooks";
+import { Alert, Check } from "../components/Icons";
+import { SLOTS } from "../harness";
+import { useFetch, useMeta } from "../hooks";
+import type { AuditFinding } from "../types";
+
+function Audit() {
+  const { data, error, reload, loading } = useFetch<AuditFinding[]>("/api/audit");
+  const problems = (data ?? []).filter((f) => f.level !== "info");
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <span className="label">Harness audit</span>
+        <span className="secondary" style={{ fontSize: 12.5 }}>
+          drift between the harness, the tools it wraps and the results that describe it
+        </span>
+        <span className="spacer" />
+        <button className="small" onClick={reload} disabled={loading}>
+          Re-run
+        </button>
+      </div>
+      <div className="panel-body">
+        {error && <div className="notice error">{error}</div>}
+        {data && problems.length === 0 && (
+          <p className="status good" style={{ marginBottom: 8 }}>
+            <Check /> No drift: tool specs match the toolserver, prompts name real tools, recorded results are current.
+          </p>
+        )}
+        <ul className="findings">
+          {(data ?? []).map((f, i) => (
+            <li key={i}>
+              <span className={`status ${f.level === "error" ? "critical" : f.level === "warning" ? "serious" : "neutral"}`}>
+                {f.level === "info" ? null : <Alert size={12} />}
+                {f.level}
+              </span>
+              <span className="mono muted" style={{ fontSize: 12 }}>{f.check}</span>
+              <span style={{ fontSize: 12.5 }}>{f.message}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="secondary" style={{ fontSize: 12, marginTop: 8 }}>
+          <span className="mono">python -m harness.audit --calibrate</span> also verifies the verification checks
+          against seeded failures.
+        </p>
+      </div>
+    </div>
+  );
+}
 
 function Diagram() {
   // runner -> agent -> proxy -> toolserver, with the verifier reading snapshots
@@ -26,7 +72,7 @@ function Diagram() {
       <text x="65" y="64" textAnchor="middle" {...text}>runner</text>
       <rect x="172" y="40" width="140" height="40" {...box} />
       <text x="242" y="58" textAnchor="middle" {...text}>agent</text>
-      <text x="242" y="72" textAnchor="middle" {...small}>one architecture</text>
+      <text x="242" y="72" textAnchor="middle" {...small}>one harness</text>
       <rect x="372" y="40" width="140" height="40" rx="4" fill="var(--fault-wash)" stroke="var(--warning)" />
       <text x="442" y="58" textAnchor="middle" {...text}>fault proxy</text>
       <text x="442" y="72" textAnchor="middle" {...small}>injects faults</text>
@@ -141,33 +187,89 @@ export function Catalog() {
         </div>
       </div>
 
-      <div className="panel">
+      <div className="panel" id="harness">
         <div className="panel-head">
-          <span className="label">Architectures</span>
+          <span className="label">Harness subsystems</span>
+          <span className="secondary" style={{ fontSize: 12.5 }}>
+            if it isn't model weights, it's harness: five slots, each with named options
+          </span>
         </div>
         <div className="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>architecture</th>
+                <th>subsystem</th>
+                <th>covers</th>
+                <th>option</th>
+                <th>what it does</th>
+              </tr>
+            </thead>
+            <tbody>
+              {meta.harness.slots.map((slot) =>
+                slot.options.map((o, i) => (
+                  <tr key={`${slot.id}-${o.id}`}>
+                    <td>{i === 0 ? <b>{slot.id}</b> : ""}</td>
+                    <td className="secondary">{i === 0 ? slot.description : ""}</td>
+                    <td className="mono nowrap">
+                      {o.id}
+                      {o.id === slot.baseline && <span className="tag" style={{ marginLeft: 6 }}>baseline</span>}
+                    </td>
+                    <td className="secondary">{o.description}</td>
+                  </tr>
+                )),
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div className="panel-body" style={{ borderTop: "1px solid var(--grid)", fontSize: 12.5 }}>
+          Any harness is a preset plus edits: <span className="mono">+slot=option</span> sets a slot,{" "}
+          <span className="mono">-slot</span> resets it to the baseline, e.g.{" "}
+          <span className="mono">critic+instructions=fault_aware</span> or <span className="mono">full-feedback</span>.
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="panel-head">
+          <span className="label">Presets</span>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>preset</th>
                 <th>driven by</th>
-                <th>client retries</th>
-                <th>design</th>
+                {SLOTS.map((s) => (
+                  <th key={s}>{s}</th>
+                ))}
+                <th>fingerprint</th>
               </tr>
             </thead>
             <tbody>
               {meta.architectures.map((a) => (
                 <tr key={a.id}>
-                  <td className="mono">{a.id}</td>
+                  <td>
+                    <div className="mono">{a.id}</div>
+                    <div className="secondary" style={{ fontSize: 12 }}>{a.description}</div>
+                  </td>
                   <td>{a.needs_llm ? (meta.llm_available ? meta.model : "model (not configured)") : "script"}</td>
-                  <td>{a.retries ? "reads on 429/5xx/bad JSON, writes on 429" : "none"}</td>
-                  <td className="secondary">{a.description}</td>
+                  {SLOTS.map((s) => {
+                    const base = meta.harness.slots.find((x) => x.id === s)?.baseline;
+                    const used = a.slots.includes(s);
+                    return (
+                      <td key={s} className="mono" style={{ fontSize: 12 }}>
+                        {!used ? <span className="muted">–</span> : a.spec[s] === base ? <span className="muted">{a.spec[s]}</span> : <b>{a.spec[s]}</b>}
+                      </td>
+                    );
+                  })}
+                  <td className="mono muted" style={{ fontSize: 12 }}>{a.fingerprint}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       </div>
+
+      <Audit />
     </div>
   );
 }

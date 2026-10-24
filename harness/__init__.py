@@ -6,7 +6,10 @@ from .spec import (
     BadHarness,
     HarnessSpec,
     Preset,
+    ablation,
     apply_edits,
+    changed_parts,
+    code_hashes,
     fingerprint,
     manifest,
     name_of,
@@ -17,5 +20,6 @@ from .spec import (
 __all__ = [
     "BASELINE", "OPTIONS", "PRESETS", "SLOTS", "SLOT_DESCRIPTIONS",
     "BadHarness", "HarnessSpec", "Option", "Preset",
-    "apply_edits", "fingerprint", "manifest", "name_of", "option", "parse", "split",
+    "ablation", "apply_edits", "changed_parts", "code_hashes", "fingerprint", "manifest", "name_of", "option",
+    "parse", "split",
 ]

@@ -38,21 +38,37 @@ class AgentContext:
 
 
 class Conversation:
-    """One model's view of the task: a system prompt, a tool set, a history."""
+    """One model's view of the task: a system prompt, a tool set, a history.
 
-    def __init__(self, ctx: AgentContext, system: str, tool_names: list[str] | None = None, role: str = "agent"):
+    state, if given, is a harness state tracker (harness/state.py): it observes
+    every tool call and its rendering is appended to the system prompt before
+    each model call."""
+
+    def __init__(self, ctx: AgentContext, system: str, tool_names: list[str] | None = None, role: str = "agent",
+                 state=None):
         self.ctx = ctx
         self.system = system
         self.role = role
         self.tool_names = tool_names
         self.tools = ctx.toolbox.llm_tools(tool_names)
         self.messages: list[dict] = []
+        self.state = state
+        self._shown = ""
+
+    def _system(self) -> str:
+        if self.state is None:
+            return self.system
+        rendered = self.state.render()
+        if rendered != self._shown:
+            self._shown = rendered
+            self.ctx.toolbox.log("state", payload={"role": self.role, "text": rendered})
+        return f"{self.system}\n\n{rendered}" if rendered else self.system
 
     def say(self, text: str, max_steps: int) -> str | None:
         """Send a user message, then execute tool calls until the model answers in text."""
         self.messages.append({"role": "user", "text": text})
         for _ in range(max_steps):
-            reply = self.ctx.complete(self.messages, self.tools, self.system, self.role)
+            reply = self.ctx.complete(self.messages, self.tools, self._system(), self.role)
             if not reply.calls:
                 if reply.text:
                     self.messages.append({"role": "assistant", "reply": reply})
@@ -62,6 +78,8 @@ class Conversation:
             results = []
             for call in reply.calls:
                 body, is_error = self.ctx.toolbox.call(call.name, call.args, allowed=self.tool_names)
+                if self.state is not None:
+                    self.state.observe(call.name, call.args, body, self.ctx.toolbox.last_status)
                 results.append({"call": call, "body": body, "is_error": is_error})
             self.messages.append({"role": "tool", "results": results})
         raise StepBudgetExceeded()

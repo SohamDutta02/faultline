@@ -40,7 +40,8 @@ class Architecture:
         return SLOTS if self.needs_llm else SCRIPTED_SLOTS
 
     def make_toolbox(self, base_url: str, on_event=None) -> Toolbox:
-        return self.toolbox(base_url, on_event=on_event)
+        env = option("environment", self.spec.environment).impl
+        return self.toolbox(base_url, on_event=on_event, idempotent=env["idempotent"])
 
     def manifest(self) -> dict:
         policy = {"id": self.policy, "version": oracle.VERSION} if self.policy == "oracle" else None

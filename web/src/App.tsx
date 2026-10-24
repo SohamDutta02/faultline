@@ -2,6 +2,7 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Header } from "./components/Header";
 import { MetaContext, useFetch } from "./hooks";
 import { Catalog } from "./pages/Catalog";
+import { Compare } from "./pages/Compare";
 import { Playground } from "./pages/Playground";
 import { SweepDetail } from "./pages/SweepDetail";
 import { Sweeps } from "./pages/Sweeps";
@@ -32,6 +33,7 @@ export default function App() {
           <Route path="/sweeps/:label" element={<SweepDetail />} />
           <Route path="/trials/:id" element={<TrialPage />} />
           <Route path="/catalog" element={<Catalog />} />
+          <Route path="/compare" element={<Compare />} />
           <Route
             path="*"
             element={

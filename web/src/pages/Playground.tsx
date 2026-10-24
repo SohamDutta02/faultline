@@ -2,12 +2,13 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { ApiError, api, followJob } from "../api";
 import { FaultChip, OutcomeStatus } from "../components/Badges";
+import { HarnessPicker } from "../components/HarnessPicker";
 import { Play } from "../components/Icons";
 import { ResultPanel } from "../components/ResultPanel";
 import { Trace } from "../components/Trace";
 import { faultSummary, ms, when } from "../format";
 import { useFetch, useMeta } from "../hooks";
-import type { JobSummary, TraceEvent, TrialRow, TrialView } from "../types";
+import type { Architecture, JobSummary, TraceEvent, TrialRow, TrialView } from "../types";
 
 interface RunInfo {
   task_id: string;
@@ -22,16 +23,17 @@ export function Playground() {
   const [params] = useSearchParams();
   const jobId = params.get("job");
 
-  const archAvailable = (id: string) => {
+  const presetAvailable = (id: string) => {
     const a = meta.architectures.find((x) => x.id === id);
     return !!a && (!a.needs_llm || meta.llm_available);
   };
-  const firstArch = meta.architectures.find((a) => archAvailable(a.id))?.id ?? "oracle";
+  const firstArch = meta.architectures.find((a) => presetAvailable(a.id))?.id ?? "oracle";
 
   const [taskId, setTaskId] = useState(params.get("task") ?? "t6_stock_fallback");
-  const [archId, setArchId] = useState(
-    params.get("arch") && archAvailable(params.get("arch")!) ? params.get("arch")! : firstArch,
-  );
+  const [archId, setArchId] = useState(params.get("arch") ?? firstArch);
+  const archInfo = useFetch<Architecture>(`/api/architectures/${encodeURIComponent(archId)}`);
+  const archAvailable = (id: string) =>
+    id === archId && !!archInfo.data && (!archInfo.data.needs_llm || meta.llm_available);
   const [configName, setConfigName] = useState(params.get("fault") ?? "stale_data");
   const [seed, setSeed] = useState(params.get("seed") ?? "");
 
@@ -174,30 +176,20 @@ export function Playground() {
 
           <div className="panel">
             <div className="panel-head">
-              <span className="label">Architecture</span>
+              <span className="label">Harness</span>
+              <span className="spacer" />
+              <Link to="/catalog#harness" style={{ fontSize: 12.5 }}>
+                subsystems
+              </Link>
             </div>
             <div className="panel-body">
-              <div className="options" role="radiogroup" aria-label="architecture">
-                {meta.architectures.map((a) => {
-                  const ok = archAvailable(a.id);
-                  return (
-                    <label key={a.id} className={`option${a.id === archId ? " selected" : ""}${ok ? "" : " disabled"}`}>
-                      <input
-                        type="radio"
-                        name="arch"
-                        checked={a.id === archId}
-                        disabled={!ok || running}
-                        onChange={() => setArchId(a.id)}
-                      />
-                      <span className="option-title">
-                        <span className="mono">{a.id}</span>
-                        <span className="tag">{a.needs_llm ? "model" : "scripted"}</span>
-                      </span>
-                      <span className="option-desc">{ok ? a.description : "needs GEMINI_API_KEY"}</span>
-                    </label>
-                  );
-                })}
-              </div>
+              <HarnessPicker value={archId} onChange={setArchId} disabled={running} />
+              {archInfo.error && <div className="notice error" style={{ marginTop: 10 }}>{archInfo.error}</div>}
+              {archInfo.data?.needs_llm && !meta.llm_available && (
+                <p className="secondary" style={{ fontSize: 12, marginTop: 8 }}>
+                  This harness drives a model: set GEMINI_API_KEY to run it.
+                </p>
+              )}
             </div>
           </div>
 
@@ -296,7 +288,7 @@ export function Playground() {
               <Trace events={events} live={running} />
             ) : (
               <div className="empty" style={{ padding: "48px 24px" }}>
-                <p>Pick a task, an architecture and a fault config, then run a trial.</p>
+                <p>Pick a task, a harness and a fault config, then run a trial.</p>
                 <p className="secondary" style={{ marginTop: 6 }}>
                   Every tool call goes through the fault proxy. Calls it tampered with are marked{" "}
                   <FaultChip fault="fault" />. For the full matrix, start a <Link to="/sweeps">sweep</Link>.

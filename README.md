@@ -29,14 +29,21 @@ work, snapshots it again, and runs task-specific checks against both snapshots.
 `python -m api` serves everything on http://127.0.0.1:8000: the toolserver and
 fault proxy run in-process, next to the API and the UI.
 
-- **Playground**: pick a task, an architecture and a fault config, run one
-  trial and watch it stream. Every tool call shows its status, latency, the
-  fault the proxy injected and any client retries; the verdict panel shows the
-  checks, the final answer, the cost and a diff of the world.
-- **Sweeps**: launch, follow and stop sweeps, then read them as a pass-rate
-  heatmap by fault config and architecture. Select a cell to list its trials,
-  and open any trial to replay its trace.
-- **Catalog**: the trial pipeline, fault configs, tasks and architectures.
+- **Playground**: pick a task, a harness (a preset, or built slot by slot)
+  and a fault config, run one trial and watch it stream. Every tool call shows
+  its status, latency, the fault the proxy injected, any client retries and
+  which channel made it; the trace also shows the harness state the model was
+  shown, the first answer's grade and each feedback round. The verdict panel
+  shows why a failure happened, what feedback changed, the checks, the final
+  answer, the cost and a diff of the world.
+- **Sweeps**: launch (optionally with an ablation), follow and stop sweeps,
+  then read them as a pass-rate heatmap by fault config and architecture,
+  plus harness spread, controlled comparisons and interactions, failure
+  attribution and feedback outcomes. Select a cell to list its trials, and
+  open any trial to replay its trace.
+- **Compare**: two sweeps cell by cell, with what changed in each harness.
+- **Catalog**: the trial pipeline, fault configs, tasks, the harness
+  subsystems and presets, and a live harness audit.
 
 The scripted architectures work without an API key, so the whole app is
 usable offline; the model-driven ones unlock once `GEMINI_API_KEY` is set.

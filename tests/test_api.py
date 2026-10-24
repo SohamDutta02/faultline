@@ -3,10 +3,8 @@ import threading
 import time
 
 import pytest
-from fastapi.testclient import TestClient
 
 from agents.llm import Reply
-from api.app import create_app
 
 
 class AnswersZero:
@@ -14,27 +12,6 @@ class AnswersZero:
 
     def complete(self, messages, tools, system):
         return Reply(text="0", tokens=1)
-
-
-@pytest.fixture
-def make_client(stack, tmp_path):
-    toolserver_url, proxy_url = stack
-    clients = []
-
-    def make(**kw):
-        kw.setdefault("llm_available", False)
-        kw.setdefault("static_dir", None)
-        kw.setdefault("login", ("admin", ""))  # hermetic: ignore a FAULTLINE_PASSWORD in the environment
-        app = create_app(db_path=tmp_path / "api.db", toolserver_url=toolserver_url, proxy_url=proxy_url,
-                         serve_stack=False, **kw)
-        client = TestClient(app)
-        client.__enter__()
-        clients.append(client)
-        return client
-
-    yield make
-    for c in clients:
-        c.__exit__(None, None, None)
 
 
 @pytest.fixture

@@ -2,7 +2,7 @@ import json
 from dataclasses import dataclass
 
 from .llm import Backend, Reply
-from .toolbox import Toolbox, llm_tools
+from .toolbox import Toolbox
 
 
 class StepBudgetExceeded(Exception):
@@ -45,7 +45,7 @@ class Conversation:
         self.system = system
         self.role = role
         self.tool_names = tool_names
-        self.tools = llm_tools(tool_names)
+        self.tools = ctx.toolbox.llm_tools(tool_names)
         self.messages: list[dict] = []
 
     def say(self, text: str, max_steps: int) -> str | None:

@@ -161,7 +161,7 @@ measured on its own.
 |---|---|---|
 | instructions | the system prompt | `base`; `fault_aware`: how the tools fail and what to trust |
 | tools | the tool interface and the client that calls it | `plain`; `retrying`: retries reads on 429/5xx/timeouts/unparseable bodies, writes only on 429 |
-| environment | the world the tools act on, and its guarantees | `bare` |
+| environment | the world the tools act on, and its guarantees | `bare`; `idempotent`: writes carry an idempotency key, so a repeat returns the first result instead of acting twice |
 | state | what the harness tracks between steps | `transcript`: the conversation only |
 | feedback | how work is checked before it counts as done | `none`; `critic`: a read-only LLM reviewer that can send the work back, up to two revisions |
 
@@ -179,6 +179,14 @@ Any harness can be written as a preset plus edits: `+slot=option` sets a slot
 and `-slot` resets it to the baseline. `critic+instructions=fault_aware` is a
 valid architecture id anywhere one is accepted (CLI, API, UI), and `retry-tools`
 is `single`. The scripted controls only take edits to `tools` and `environment`.
+
+The fault configs are what the experiment does to the environment; the
+environment slot is what the harness designer chooses about it. Under
+`idempotent` the client sends a `request_id` with every write (a hash of the
+trial, the tool and its arguments), the toolserver performs each keyed write
+at most once, the tool descriptions say so, and the retrying client can retry
+writes like reads. The trade-off: two identical writes in one trial collapse
+into one.
 
 Every harness has a fingerprint: a hash of its prompts, tool schemas, client
 policy and option versions, but not the model. Two ids for the same harness
@@ -213,19 +221,20 @@ injected faults (`F`), reviewer verdicts.
 
 ## Control results
 
-The control sweep (`--archs oracle oracle_retry`, 3 repeats, 18 trials per
-cell) is deterministic. It shows what each fault does to a client that knows
-exactly what to do, with and without client retries:
+The control sweep (`--archs oracle oracle_retry oracle_retry+environment=idempotent`,
+3 repeats, 18 trials per cell) is deterministic. It shows what each fault does
+to a client that knows exactly what to do, with and without client retries,
+and with retries in an environment whose writes are idempotent:
 
-| config | oracle | oracle_retry |
-|---|---:|---:|
-| none | 100% | 100% |
-| rate_limit | 50% | 94% |
-| timeout | 44% | 72% |
-| malformed_json | 67% | 100% |
-| stale_data | 67% | 67% |
-| plausible_wrong | 67% | 67% |
-| partial_write | 100% | 100% |
+| config | oracle | oracle_retry | oracle_retry, idempotent env |
+|---|---:|---:|---:|
+| none | 100% | 100% | 100% |
+| rate_limit | 50% | 94% | 94% |
+| timeout | 44% | 72% | 83% |
+| malformed_json | 67% | 100% | 100% |
+| stale_data | 67% | 67% | 67% |
+| plausible_wrong | 67% | 67% | 67% |
+| partial_write | 100% | 100% | 100% |
 
 Retries recover rate limits and corrupted bodies almost entirely. They recover
 timeouts only on reads: a write that timed out might have committed, so the
@@ -234,6 +243,10 @@ still fail. Semantic faults are untouched, since a stale or wrong value
 re-reads the same way. Partial writes never hurt a client that doesn't retry
 blindly: that failure mode belongs to agents that do, which is what the model
 architectures are measured on.
+
+Making writes idempotent is an environment change, not a client change, and it
+recovers most of the timed-out writes: the retrying client can now resend them
+safely. What's left are calls that timed out on all three attempts.
 
 ## Extending
 

@@ -49,7 +49,8 @@ class WriteRecord:
     def line(self) -> str:
         call = _fmt(self.tool, self.args)
         if self.outcome == "done":
-            return f"{call}: done" + (f" ({self.order_id})" if self.order_id else "") + (f"; {self.detail}" if self.detail else "")
+            return (f"{call}: done" + (f" ({self.order_id})" if self.order_id else "")
+                    + (f"; {self.detail}" if self.detail else ""))
         if self.outcome == "went_through":
             return f"{call}: reported an error but went through" + (f" as {self.order_id}" if self.order_id else "") + \
                 f" ({self.detail}). Do not repeat it."

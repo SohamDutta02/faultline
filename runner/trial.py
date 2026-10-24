@@ -15,6 +15,8 @@ from tasks.catalog import BY_ID, CATALOG
 from tasks.spec import Task
 from tasks.verify import verify, world_diff
 
+from sweep.attribution import attribute
+
 
 @dataclass
 class TrialResult:
@@ -35,6 +37,10 @@ class TrialResult:
     world_diff: dict = field(default_factory=dict)
     # for harnesses with feedback: {"option", "first_pass": checkpoint, "reviews": [...]}
     feedback: dict | None = None
+    # for failed trials: {"cause", "subsystem", "evidence", "also", "notes"} (sweep/attribution.py)
+    attribution: dict | None = None
+    # the harness that produced it: {"fingerprint", "manifest", "code"}
+    harness: dict | None = None
 
 
 def prepare_world(admin: httpx.Client, task: Task) -> dict:
@@ -103,7 +109,7 @@ def run_trial(
     feedback = None
     if ctx.checkpoints:
         feedback = {"option": arch.spec.feedback, "first_pass": ctx.checkpoints[0], "reviews": ctx.reviews}
-    return TrialResult(
+    result = TrialResult(
         task_id=task.id,
         architecture_id=architecture_id,
         outcome=verdict.outcome.value,
@@ -120,7 +126,10 @@ def run_trial(
         checks=[asdict(c) for c in verdict.checks],
         world_diff=world_diff(before, after),
         feedback=feedback,
+        harness=arch.record(),
     )
+    result.attribution = attribute(asdict(result))
+    return result
 
 
 def arch_id(value: str) -> str:

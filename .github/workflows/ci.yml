@@ -16,6 +16,8 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt -r requirements-dev.txt
       - run: python -m pytest -q
+      - name: harness audit (spec drift, prompt references, presets, verifier calibration)
+        run: python -m harness.audit --calibrate
 
   web:
     runs-on: ubuntu-latest

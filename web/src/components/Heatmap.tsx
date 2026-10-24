@@ -1,6 +1,17 @@
 import { useState } from "react";
 import type { Tally } from "../types";
 
+/** Let long harness ids wrap at their edits (single+tools=retrying) rather than mid-word. */
+function breakable(id: string) {
+  const parts = id.split(/(?=[+=-])/);
+  return parts.map((p, i) => (
+    <span key={i}>
+      {i > 0 && <wbr />}
+      {p}
+    </span>
+  ));
+}
+
 const BINS = [
   { min: 0, label: "0–19%" },
   { min: 20, label: "20–39%" },
@@ -66,8 +77,8 @@ export function Heatmap({ rows, cols, cell, note, selected, onSelect, rowHeader 
         {rowHeader}
       </div>
       {cols.map((c) => (
-        <div className="hm-col" key={c} role="columnheader">
-          {c}
+        <div className="hm-col" key={c} role="columnheader" title={c}>
+          {breakable(c)}
         </div>
       ))}
       {rows.map((r) => (

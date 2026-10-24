@@ -17,6 +17,7 @@ from agents.loop import AgentContext, Conversation, StepBudgetExceeded
 from agents.toolbox import READ_ONLY
 from tasks.spec import Task
 
+from . import checks as checks_module
 from .base import Option
 from .checks import agent_calls, reader, run_checks
 
@@ -109,6 +110,8 @@ CRITIC_CONTENT = {"system": CRITIC_SYSTEM, "review": CRITIC_REVIEW, "revise": RE
                   "max_rounds": Critic.max_rounds, "steps": Critic.steps}
 CHECKS_CONTENT = {"checks": "errored writes reconciled, duplicates, re-read facts, final answer present",
                   "revise": REVISE, "max_rounds": Checks.max_rounds}
+CRITIC_CODE = (Feedback, Critic, verdict)
+CHECKS_CODE = (Feedback, Checks, checks_module)
 UPPER_BOUND = " Reads ground truth, bypassing the fault proxy: an upper bound, not a deployable design."
 
 OPTIONS = {
@@ -116,13 +119,13 @@ OPTIONS = {
     for o in [
         Option("none", "the first answer is final", {"kind": "none"}, impl=None),
         Option("critic", "a read-only LLM reviewer re-checks the work and can send it back",
-               {**CRITIC_CONTENT, "channel": "review"}, impl=Critic("review")),
+               {**CRITIC_CONTENT, "channel": "review"}, impl=Critic("review"), code=CRITIC_CODE),
         Option("checks", "deterministic verification, no model: reconciles errored writes, finds duplicates, "
                          "re-reads the facts the agent used", {**CHECKS_CONTENT, "channel": "review"},
-               impl=Checks("review")),
+               impl=Checks("review"), code=CHECKS_CODE),
         Option("critic_independent", "the critic, reading an independent source of truth." + UPPER_BOUND,
-               {**CRITIC_CONTENT, "channel": "truth"}, impl=Critic("truth")),
+               {**CRITIC_CONTENT, "channel": "truth"}, impl=Critic("truth"), code=CRITIC_CODE),
         Option("checks_independent", "the checks, reading an independent source of truth." + UPPER_BOUND,
-               {**CHECKS_CONTENT, "channel": "truth"}, impl=Checks("truth")),
+               {**CHECKS_CONTENT, "channel": "truth"}, impl=Checks("truth"), code=CHECKS_CODE),
     ]
 }

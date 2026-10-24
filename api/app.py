@@ -14,12 +14,14 @@ from pydantic import BaseModel, Field
 import settings
 from agents.llm import Backend, default_backend
 import harness
-from agents.registry import ARCHITECTURES, BadHarness, resolve
+from agents.registry import ARCHITECTURES, BadHarness, ablation, resolve
 from proxy import config as fault_config
 from proxy.faults import REGISTRY
 from runner.stack import local_stack
 from runner.trial import run_trial
-from sweep import report, store
+from harness import audit as harness_audit
+from sweep import compare as sweep_compare
+from sweep import report, store, versions
 from sweep.run import FAULT_CONFIGS, LLM_ARCHITECTURES, execute, plan, set_fault_config
 from tasks.catalog import BY_ID, CATALOG
 
@@ -41,12 +43,16 @@ class TrialRequest(BaseModel):
 
 class SweepRequest(BaseModel):
     label: str
-    archs: list[str] = Field(min_length=1)
+    archs: list[str] = Field(default_factory=list)
     configs: list[str] = Field(min_length=1)
     tasks: list[str] = Field(min_length=1)
     repeats: int = Field(3, ge=1, le=20)
     pace: float = Field(15.0, ge=0, le=300)
     max_steps: int = Field(12, ge=1, le=50)
+    # adds the controlled-variable set around this harness to archs
+    ablate: str | None = None
+    # resuming a sweep whose cells came from older harness versions: refuse, rerun them, or mix
+    on_stale: str = Field("refuse", pattern="^(refuse|rerun|mix)$")
 
 
 def create_app(
@@ -142,6 +148,13 @@ def create_app(
             },
             "sweep_defaults": {"configs": FAULT_CONFIGS, "archs": LLM_ARCHITECTURES, "tasks": [t.id for t in CATALOG]},
         }
+
+    @app.get("/api/ablation/{arch_id}")
+    def describe_ablation(arch_id: str):
+        try:
+            return [arch_info(a) for a in ablation(arch_id)]
+        except BadHarness as exc:
+            raise HTTPException(400, str(exc))
 
     @app.get("/api/architectures/{arch_id}")
     def describe_architecture(arch_id: str):
@@ -286,7 +299,23 @@ def create_app(
     def start_sweep(req: SweepRequest):
         if not LABEL.match(req.label) or req.label == PLAYGROUND:
             raise HTTPException(400, "label must be 1-64 letters, digits, '.', '_' or '-', and not 'playground'")
+        if req.ablate:
+            try:
+                req.archs = list(dict.fromkeys(req.archs + ablation(req.ablate)))
+            except BadHarness as exc:
+                raise HTTPException(400, str(exc))
+        if not req.archs:
+            raise HTTPException(400, "pick at least one architecture, or a harness to ablate")
         check_archs(req.archs)
+        with db() as conn:
+            existing = store.find_sweep(conn, req.label)
+            stale = [s for s in versions.staleness(conn, existing["id"], req.archs) if s["stale"]] if existing else []
+        if stale and req.on_stale == "refuse":
+            raise HTTPException(409, {
+                "message": f"sweep {req.label} has results from older harness versions; resume with "
+                           "on_stale=rerun to redo them or on_stale=mix to keep them, or use a new label",
+                "stale": [versions.describe(s) for s in stale],
+            })
         check_configs(req.configs)
         unknown = sorted(set(req.tasks) - set(BY_ID))
         if unknown:
@@ -298,8 +327,12 @@ def create_app(
             backend = make_backend() if needs_llm else None
             with db() as conn:
                 matrix = {k: p[k] for k in ("archs", "configs", "tasks", "repeats")}
-                sweep_id = store.start_sweep(conn, p["label"], backend.model if backend else "none", p["repeats"], matrix)
-                total, todo = plan(p["repeats"], p["configs"], p["tasks"], p["archs"], store.done_cells(conn, sweep_id))
+                model_id = backend.model if backend else "none"
+                sweep_id = store.start_sweep(conn, p["label"], model_id, p["repeats"], matrix)
+                current = ({a: resolve(a).fingerprint for a in p["archs"]}
+                           if p.get("on_stale") == "rerun" else None)
+                done = store.done_cells(conn, sweep_id, current)
+                total, todo = plan(p["repeats"], p["configs"], p["tasks"], p["archs"], done)
                 job.progress = {"done": 0, "total": len(todo), "planned": total}
                 job.emit("plan", label=p["label"], total=total, todo=len(todo))
 
@@ -350,6 +383,21 @@ def create_app(
                 raise HTTPException(404, "no such sweep")
             filters = {"fault_config": config, "architecture_id": arch, "task_id": task, "outcome": outcome}
             return store.list_trials(conn, sweep["id"], filters, limit)
+
+    @app.get("/api/compare")
+    def compare_sweeps(base: str, head: str, threshold: float = Query(10.0, ge=0, le=100)):
+        with db() as conn:
+            try:
+                return sweep_compare.compare(conn, base, head, threshold)
+            except KeyError as exc:
+                raise HTTPException(404, str(exc.args[0]))
+
+    @app.get("/api/audit")
+    def audit():
+        """The static harness audit plus the checks against this app's recorded results."""
+        with db() as conn:
+            findings = harness_audit.run(conn)
+        return [asdict(f) for f in findings]
 
     @app.get("/api/health")
     def health():

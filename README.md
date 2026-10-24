@@ -333,6 +333,33 @@ Attributions are stored with each trial; `python -m sweep.attribution --label X`
 recomputes them for a sweep (for one recorded before this existed, or after
 the rules change).
 
+## Harness rot
+
+A harness rots like code: prompts get edited, retry policies tuned, checks
+extended, while the results that describe it stay in the database. Every
+trial records the fingerprint of the harness that produced it (and the
+harness itself, once, in a `harness` table), so drift shows up instead of
+silently mixing into the numbers.
+
+- **Resuming** a sweep whose cells came from an older version of their harness
+  is refused, naming the parts that changed. `--rerun-stale` redoes those
+  cells under the current harness, `--allow-mixed` keeps them. The report
+  warns when an architecture's results come from an older harness or mix
+  versions.
+- **`python -m sweep.compare --base before --head after`** is the regression
+  report for a harness change: pass rates on cells paired across the two
+  sweeps (same fault seeds), which parts of each harness changed, and the
+  cells that moved by 10 points or more (`--threshold`).
+- **`python -m harness.audit`** checks for drift: the tool specs the model sees
+  against the toolserver's real routes, prompts that name tools that don't
+  exist, presets that don't resolve. Against the results database (`--db`, or
+  `faultline.db` if it exists) it also finds options whose code changed
+  without a version bump, so their old results still look current, and
+  presets whose latest results come from an older harness. `--calibrate`
+  verifies the verifier: the `checks` must raise no false alarms on the
+  oracle's correct runs of every task and catch four seeded failures. CI runs
+  `python -m harness.audit --calibrate`; `--strict` fails on warnings too.
+
 ## Control results
 
 The control sweep (`--archs oracle oracle_retry oracle_retry+environment=idempotent`,
@@ -386,9 +413,10 @@ toolserver/   seeded warehouse world and six tool endpoints (FastAPI)
 proxy/        fault-injecting reverse proxy, fault classes, configs
 tasks/        task catalog, checks, verifier
 agents/       LLM backend, toolbox clients, agent loop, oracle, architecture registry
-harness/      the five harness subsystems, presets, harness names, fingerprints
+harness/      the five harness subsystems, presets, harness names, fingerprints, deterministic checks, audit
 runner/       single-trial runner, in-process server stack
-sweep/        sweep runner, SQLite store, report, controlled comparisons, failure attribution, trial inspector
+sweep/        sweep runner, SQLite store, report, controlled comparisons, failure attribution, harness
+              versions, sweep comparison, trial inspector
 api/          FastAPI app: catalog, live trial streams (SSE), sweep control
 web/          React + TypeScript UI (Vite)
 tests/        offline pytest suite

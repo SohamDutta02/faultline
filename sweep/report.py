@@ -5,7 +5,7 @@ from pathlib import Path
 
 from agents.registry import ARCHITECTURES
 
-from . import analysis, attribution, store
+from . import analysis, attribution, store, versions
 from .run import FAULT_CONFIGS
 
 OUTCOMES = ["pass", "fail_wrong_answer", "fail_no_answer", "fail_loop", "fail_crash"]
@@ -109,6 +109,7 @@ def summarize(conn, label: str) -> dict | None:
         "comparisons": comparisons,
         "interactions": analysis.interactions(comparisons),
         "attribution": [{"arch": a, **attribution.summarize(per_arch[a])} for a in archs],
+        "versions": versions.staleness(conn, sweep["id"], archs),
     }
 
 
@@ -139,6 +140,7 @@ def build(conn, label: str, by_task: bool = False, markdown: bool = False) -> st
 
     archs, cfgs = s["archs"], s["configs"]
     grid = {(c["config"], c["arch"]): c for c in s["cells"]}
+    version_notes = [line for v in s["versions"] if (line := versions.describe(v))]
     h = "### " if markdown else ""
     out = [
         f"{'# ' if markdown else ''}sweep {label}",
@@ -148,6 +150,8 @@ def build(conn, label: str, by_task: bool = False, markdown: bool = False) -> st
         f"{h}Pass rate (n trials)",
         render(["config"] + archs, [[c] + [_cell(grid[(c, a)]) for a in archs] for c in cfgs], markdown),
     ]
+    if version_notes:
+        out[2:2] = [f"warning: {line}" for line in version_notes]
 
     if "none" in cfgs and len(cfgs) > 1:
         rows = []

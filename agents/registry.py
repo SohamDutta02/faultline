@@ -10,7 +10,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache, partial
 
-from harness import BadHarness, HarnessSpec, PRESETS, SLOTS, apply_edits, fingerprint, manifest, split
+from harness import BadHarness, HarnessSpec, PRESETS, SLOTS, apply_edits, code_hashes, fingerprint, manifest, split
+from harness.base import code_hash
 from harness import ablation as harness_ablation
 from harness.spec import dedupe
 from harness import runner as harness_runner
@@ -18,7 +19,7 @@ from harness.components import option
 from tasks.spec import Task
 
 from . import oracle
-from .loop import AgentContext
+from .loop import AgentContext, Conversation
 from .toolbox import Toolbox
 
 SCRIPTED_SLOTS = ("tools", "environment")
@@ -52,6 +53,15 @@ class Architecture:
     @property
     def fingerprint(self) -> str:
         return fingerprint(self.manifest())
+
+    def code(self) -> dict:
+        """Hashes of the source behind each part, for the audit's version-bump check."""
+        policy = (oracle,) if self.policy == "oracle" else (harness_runner, Conversation, AgentContext)
+        return {"policy": code_hash(policy), **code_hashes(self.spec, self.slots)}
+
+    def record(self) -> dict:
+        """What a trial stores about the harness that produced it."""
+        return {"fingerprint": self.fingerprint, "manifest": self.manifest(), "code": self.code()}
 
 
 SCRIPTED = {

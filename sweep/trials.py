@@ -39,6 +39,8 @@ def _summary(kind: str, payload: dict) -> str:
         return f"{payload.get('tokens', 0)} tok  " + (f"calls {calls}" if calls else f"says {text!r}")
     if kind == "critic":
         return f"round {payload.get('round')}: {payload.get('verdict')}  {payload.get('review', '')[:160]!r}"
+    if kind == "state":
+        return payload.get("text", "").replace("\n", " | ")[:200]
     if kind == "crash":
         return payload.get("traceback", "")[-300:]
     return json.dumps(payload)[:200]

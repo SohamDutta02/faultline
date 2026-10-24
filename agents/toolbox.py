@@ -147,6 +147,7 @@ class Toolbox:
         self.call_count = 0
         self.error_count = 0
         self.retries = 0
+        self.last_status: int | None = None  # status of the most recent call(), for harness state
 
     def log(self, kind: str, **kw):
         event = Event(step_idx=len(self.events), kind=kind, **kw)
@@ -208,11 +209,13 @@ class Toolbox:
     def call(self, name: str, args: dict, allowed: list[str] | None = None) -> tuple[str, bool]:
         if name not in BY_NAME or (allowed is not None and name not in allowed):
             self.error_count += 1
+            self.last_status = 400
             return json.dumps({"error": "unknown_tool", "detail": name}), True
 
         self.call_count += 1
         self.log("tool_call", tool_name=name, payload=args)
         resp = self.execute(name, args)
+        self.last_status = resp.status
         if resp.is_error:
             self.error_count += 1
         return resp.body, resp.is_error

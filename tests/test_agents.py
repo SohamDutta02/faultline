@@ -124,7 +124,7 @@ def test_critic_catches_a_duplicate_from_partial_write(urls, faults):
     assert r.outcome == "pass", r.reason
     critic_tools = backend.requests[3]["tools"]
     assert "place_order" not in critic_tools and "list_orders" in critic_tools
-    assert [e["payload"]["verdict"] for e in r.events if e["kind"] == "critic"] == ["revise", "ok"]
+    assert [e["payload"]["verdict"] for e in r.events if e["kind"] == "feedback"] == ["revise", "ok"]
     review_prompt = backend.requests[3]["messages"][0]["text"]
     assert "place_order" in review_prompt and "[ERROR]" in review_prompt
 

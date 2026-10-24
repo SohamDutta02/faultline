@@ -14,6 +14,9 @@ from tasks.spec import Task
 from .loop import AgentContext
 from .toolbox import Toolbox
 
+# bump when a solver changes what it does; part of the oracle's harness fingerprint
+VERSION = 1
+
 
 class ToolFailed(Exception):
     pass

@@ -1,29 +1,93 @@
+"""Architecture ids -> runnable architectures.
+
+An LLM architecture is a harness (see harness/): a preset like `retry`, or a
+preset edited slot by slot like `single+tools=retrying+feedback=critic`. The
+scripted controls (`oracle`, `oracle_retry`) have no model, so only their
+tools and environment slots can be edited.
+"""
+
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import lru_cache, partial
 
+from harness import BadHarness, HarnessSpec, PRESETS, SLOTS, apply_edits, fingerprint, manifest, split
+from harness import runner as harness_runner
+from harness.components import option
 from tasks.spec import Task
 
-from . import critic, oracle, single
+from . import oracle
 from .loop import AgentContext
-from .toolbox import ResilientToolbox, Toolbox
+from .toolbox import Toolbox
+
+SCRIPTED_SLOTS = ("tools", "environment")
 
 
 @dataclass(frozen=True)
 class Architecture:
     id: str
     run: Callable[[Task, AgentContext], str | None]
-    toolbox: type[Toolbox] = Toolbox
+    spec: HarnessSpec
     needs_llm: bool = True
     description: str = ""
+    policy: str = "llm"
+
+    @property
+    def toolbox(self) -> type[Toolbox]:
+        return option("tools", self.spec.tools).impl
+
+    @property
+    def slots(self) -> tuple[str, ...]:
+        return SLOTS if self.needs_llm else SCRIPTED_SLOTS
+
+    def make_toolbox(self, base_url: str, on_event=None) -> Toolbox:
+        return self.toolbox(base_url, on_event=on_event)
+
+    def manifest(self) -> dict:
+        policy = {"id": self.policy, "version": oracle.VERSION} if self.policy == "oracle" else None
+        return manifest(self.spec, self.slots, policy)
+
+    @property
+    def fingerprint(self) -> str:
+        return fingerprint(self.manifest())
 
 
-ARCHITECTURES = {
-    a.id: a
-    for a in [
-        Architecture("single", single.run, Toolbox, True, "one tool-calling loop, no safety nets"),
-        Architecture("retry", single.run, ResilientToolbox, True, "single + client-side retries for transport and schema faults"),
-        Architecture("critic", critic.run, Toolbox, True, "single + read-only reviewer that can send the work back"),
-        Architecture("oracle", oracle.run, Toolbox, False, "scripted per-task policy, no LLM (control)"),
-        Architecture("oracle_retry", oracle.run, ResilientToolbox, False, "oracle on the retrying client, no LLM (control)"),
-    ]
+SCRIPTED = {
+    "oracle": (HarnessSpec(), "scripted per-task policy, no LLM (control)"),
+    "oracle_retry": (HarnessSpec(tools="retrying"), "oracle on the retrying client, no LLM (control)"),
 }
+
+
+def _describe(head: str, base: HarnessSpec, spec: HarnessSpec, preset_description: str) -> str:
+    changed = spec.differs(base)
+    if not changed:
+        return preset_description
+    return f"{head} with " + ", ".join(f"{s} = {getattr(spec, s)}" for s in changed)
+
+
+@lru_cache(maxsize=None)
+def resolve(arch_id: str) -> Architecture:
+    """Raises BadHarness for an id that doesn't name a valid harness."""
+    head, edits = split(arch_id)
+    if head in SCRIPTED:
+        base, desc = SCRIPTED[head]
+        spec = apply_edits(base, edits, allowed=SCRIPTED_SLOTS)
+        return Architecture(arch_id, oracle.run, spec, False, _describe(head, base, spec, desc), "oracle")
+    if head not in PRESETS:
+        raise BadHarness(f"unknown architecture {head!r}; have {', '.join([*PRESETS, *SCRIPTED])}")
+    preset = PRESETS[head]
+    spec = apply_edits(preset.spec, edits)
+    run = partial(harness_runner.run, spec=spec)
+    return Architecture(arch_id, run, spec, True, _describe(head, preset.spec, spec, preset.description))
+
+
+def is_valid(arch_id: str) -> bool:
+    try:
+        resolve(arch_id)
+    except BadHarness:
+        return False
+    return True
+
+
+# the named architectures, for listings: harness presets, then the scripted controls
+ARCHITECTURES = {a: resolve(a) for a in [*PRESETS, *SCRIPTED]}
+LLM_PRESETS = list(PRESETS)

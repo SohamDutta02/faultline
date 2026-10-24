@@ -150,15 +150,39 @@ of `POST /_proxy/config`.
 | `t5_tier_quote` | read only | quote 10 x D-40 at CUST-101's tier | multi-hop read; wrong prices are internally consistent |
 | `t6_stock_fallback` | read then write | order 20 x C-09, or whatever is in stock | stale stock causes a rejection whose message reveals the truth |
 
-## Architectures
+## Harnesses
 
-| id | uses LLM | design |
+An architecture is a harness: everything around the model that decides how
+much of its capability gets realized. faultline splits a harness into five
+subsystems, each a slot with named options, so each one can be changed and
+measured on its own.
+
+| subsystem | what it covers | options (baseline first) |
 |---|---|---|
-| `single` | yes | one tool-calling loop, no safety nets |
-| `retry` | yes | `single` on a client that retries reads on 429/5xx/timeouts/unparseable bodies and writes only on 429 |
-| `critic` | yes | `single`, then a read-only reviewer re-checks the work and can send it back (up to two revisions) |
-| `oracle` | no | scripted per-task policy with no retries; the control column, and lets the pipeline run without a key |
-| `oracle_retry` | no | the oracle on the retrying client: what client retries alone buy, with no model involved |
+| instructions | the system prompt | `base`; `fault_aware`: how the tools fail and what to trust |
+| tools | the tool interface and the client that calls it | `plain`; `retrying`: retries reads on 429/5xx/timeouts/unparseable bodies, writes only on 429 |
+| environment | the world the tools act on, and its guarantees | `bare` |
+| state | what the harness tracks between steps | `transcript`: the conversation only |
+| feedback | how work is checked before it counts as done | `none`; `critic`: a read-only LLM reviewer that can send the work back, up to two revisions |
+
+Presets name common harnesses:
+
+| id | harness |
+|---|---|
+| `single` | the baseline: one tool-calling loop, no safety nets |
+| `retry` | `single+tools=retrying` |
+| `critic` | `single+feedback=critic` |
+| `oracle` | no model: a scripted per-task policy with no retries; the control column, and lets the pipeline run without a key |
+| `oracle_retry` | the oracle on the retrying client: what client retries alone buy, with no model involved |
+
+Any harness can be written as a preset plus edits: `+slot=option` sets a slot
+and `-slot` resets it to the baseline. `critic+instructions=fault_aware` is a
+valid architecture id anywhere one is accepted (CLI, API, UI), and `retry-tools`
+is `single`. The scripted controls only take edits to `tools` and `environment`.
+
+Every harness has a fingerprint: a hash of its prompts, tool schemas, client
+policy and option versions, but not the model. Two ids for the same harness
+share a fingerprint.
 
 ## Outcomes
 
@@ -219,9 +243,12 @@ architectures are measured on.
   `tasks/catalog.py`, add a `Task` (with `setup` orders if it needs existing
   state), and add an oracle solver in `agents/oracle.py`. The test suite runs
   the oracle against every catalog task.
-- **Architecture**: write `run(task, ctx) -> answer` using
-  `agents.loop.Conversation`, and register it in `agents/registry.py`. It
-  shows up in the CLI, the API and the UI.
+- **Harness option**: add an `Option` to the slot's module in `harness/`
+  (`instructions.py`, `tools.py`, `environment.py`, `state.py`,
+  `feedback.py`). Put what defines it (prompt text, policy parameters) in
+  `content` so it is fingerprinted, and bump `version` when you change its
+  behaviour in code. It is usable as `single+slot=option` right away; add a
+  preset in `harness/spec.py` if it deserves a name.
 - **Model provider**: implement the `agents.llm.Backend` protocol (one
   `complete(messages, tools, system) -> Reply` method).
 
@@ -231,7 +258,8 @@ architectures are measured on.
 toolserver/   seeded warehouse world and six tool endpoints (FastAPI)
 proxy/        fault-injecting reverse proxy, fault classes, configs
 tasks/        task catalog, checks, verifier
-agents/       LLM backend, toolboxes, agent loop, architectures, oracle
+agents/       LLM backend, toolbox clients, agent loop, oracle, architecture registry
+harness/      the five harness subsystems, presets, harness names, fingerprints
 runner/       single-trial runner, in-process server stack
 sweep/        sweep runner, SQLite store, report, trial inspector
 api/          FastAPI app: catalog, live trial streams (SSE), sweep control

@@ -44,7 +44,9 @@ export function TrialPage() {
   if (!trial) return <div className="page" />;
 
   const fromPlayground = trial.sweep_label === "playground";
-  const rerun = `/?task=${trial.task_id}&arch=${encodeURIComponent(trial.architecture_id)}&fault=${trial.fault_config}&seed=${trial.seed}`;
+  const rerun =
+    `/?task=${trial.task_id}&arch=${encodeURIComponent(trial.architecture_id)}&fault=${trial.fault_config}` +
+    `&seed=${trial.seed}${trial.model ? `&model=${encodeURIComponent(trial.model)}` : ""}`;
 
   return (
     <div className="page">
@@ -76,6 +78,11 @@ export function TrialPage() {
               </span>
             )}
           </span>
+          {trial.model && (
+            <span>
+              model <b>{trial.model}</b>
+            </span>
+          )}
           <span>
             faults <b>{trial.fault_config}</b>
           </span>

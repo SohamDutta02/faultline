@@ -60,6 +60,16 @@ export interface Meta {
   fault_types: Record<string, { layer: string; phase: string; description: string }>;
   sweep_defaults: { configs: string[]; archs: string[]; tasks: string[] };
   harness: { slots: HarnessSlot[]; presets: string[] };
+  providers: Provider[];
+}
+
+export interface Provider {
+  id: "gemini" | "anthropic" | "openai";
+  available: boolean;
+  default_model: string | null;
+  /** the environment variable(s) that enable it */
+  key: string;
+  default: boolean;
 }
 
 export interface TraceEvent {
@@ -151,6 +161,7 @@ export interface TrialRow {
   duration_ms: number | null;
   answer: string | null;
   attribution?: Attribution | null;
+  model?: string | null;
   created_at: string;
 }
 

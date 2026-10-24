@@ -9,11 +9,27 @@ load_dotenv(find_dotenv(usecwd=True), override=True)
 TOOLSERVER_URL = os.getenv("TOOLSERVER_URL", "http://127.0.0.1:8100")
 PROXY_URL = os.getenv("PROXY_URL", "http://127.0.0.1:8200")
 
-MODEL = os.getenv("FAULTLINE_MODEL", "gemini-2.0-flash")
+# The model id picks its provider (agents/backends.py); FAULTLINE_PROVIDER
+# overrides the guess. Both empty: the first provider with a key, at its default model.
+MODEL = os.getenv("FAULTLINE_MODEL", "").strip() or None
+PROVIDER = os.getenv("FAULTLINE_PROVIDER", "").strip().lower() or None
 
 
 def gemini_key() -> str:
     return os.getenv("GEMINI_API_KEY", "").strip()
+
+
+def anthropic_key() -> str:
+    return os.getenv("ANTHROPIC_API_KEY", "").strip()
+
+
+def openai_key() -> str:
+    return os.getenv("OPENAI_API_KEY", "").strip()
+
+
+def openai_base_url() -> str:
+    """An OpenAI-compatible server (vLLM, SGLang, Ollama, OpenRouter...); empty means api.openai.com."""
+    return os.getenv("OPENAI_BASE_URL", "").strip()
 
 
 def app_login() -> tuple[str, str]:

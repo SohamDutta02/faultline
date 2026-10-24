@@ -3,8 +3,9 @@ import { Link, useNavigate } from "react-router-dom";
 import { ApiError, api } from "../api";
 import { JobStatus } from "../components/Badges";
 import { Play } from "../components/Icons";
+import { ModelField } from "../components/ModelField";
 import { defaultLabel, pct, when } from "../format";
-import { useFetch, useMeta } from "../hooks";
+import { hasModel, useFetch, useMeta } from "../hooks";
 import type { Architecture, JobSummary, SweepRow } from "../types";
 
 function Checklist({
@@ -51,14 +52,15 @@ function Checklist({
 function NewSweep({ onCancel }: { onCancel: () => void }) {
   const meta = useMeta();
   const navigate = useNavigate();
-  const usable = meta.architectures.filter((a) => !a.needs_llm || meta.llm_available).map((a) => a.id);
+  const usable = meta.architectures.filter((a) => !a.needs_llm || hasModel(meta)).map((a) => a.id);
   const [label, setLabel] = useState(defaultLabel());
-  const [archs, setArchs] = useState<string[]>(meta.llm_available ? meta.sweep_defaults.archs : usable);
+  const [archs, setArchs] = useState<string[]>(hasModel(meta) ? meta.sweep_defaults.archs : usable);
   const [configs, setConfigs] = useState<string[]>(meta.fault_configs.map((c) => c.name));
   const [tasks, setTasks] = useState<string[]>(meta.tasks.map((t) => t.id));
   const [repeats, setRepeats] = useState(3);
   const [pace, setPace] = useState(15);
   const [ablate, setAblate] = useState("");
+  const [model, setModel] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [stale, setStale] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -77,6 +79,7 @@ function NewSweep({ onCancel }: { onCancel: () => void }) {
     try {
       await api.post<JobSummary>("/api/sweeps", {
         label, archs, configs, tasks, repeats, pace: usesModel ? pace : 0, ablate: ablate || null, on_stale: onStale,
+        model: usesModel && model.trim() ? model.trim() : null,
       });
       navigate(`/sweeps/${encodeURIComponent(label)}`);
     } catch (e) {
@@ -118,6 +121,11 @@ function NewSweep({ onCancel }: { onCancel: () => void }) {
             />
           </label>
         </div>
+        {usesModel && (
+          <div style={{ maxWidth: 420 }}>
+            <ModelField id="sweep-model" value={model} onChange={setModel} />
+          </div>
+        )}
         <div className="field-row" style={{ alignItems: "flex-start" }}>
           <label className="field" style={{ minWidth: 260 }}>
             <span className="label">Ablate a harness</span>
@@ -126,7 +134,7 @@ function NewSweep({ onCancel }: { onCancel: () => void }) {
               {meta.architectures
                 .filter((a) => a.id !== "single" && a.id !== "oracle")
                 .map((a) => (
-                  <option key={a.id} value={a.id} disabled={a.needs_llm && !meta.llm_available}>
+                  <option key={a.id} value={a.id} disabled={a.needs_llm && !hasModel(meta)}>
                     {a.id}
                   </option>
                 ))}
@@ -154,7 +162,7 @@ function NewSweep({ onCancel }: { onCancel: () => void }) {
             selected={archs}
             onChange={setArchs}
             disabled={(a) => !usable.includes(a)}
-            describe={(a) => (usable.includes(a) ? undefined : "needs GEMINI_API_KEY")}
+            describe={(a) => (usable.includes(a) ? undefined : "needs a model key")}
           />
           <Checklist name="Fault configs" items={meta.fault_configs.map((c) => c.name)} selected={configs} onChange={setConfigs} />
           <Checklist name="Tasks" items={meta.tasks.map((t) => t.id)} selected={tasks} onChange={setTasks} />

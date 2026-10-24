@@ -10,3 +10,6 @@ faultline.db
 .pytest_cache/
 node_modules/
 web/dist/
+
+# personal Claude Code settings
+.claude/settings.local.json

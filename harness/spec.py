@@ -16,7 +16,7 @@ import json
 import re
 from dataclasses import dataclass, replace
 
-from .base import SLOTS, Option
+from .base import LLM_POLICY_VERSION, SLOTS, Option, code_hash
 from .components import OPTIONS
 
 
@@ -154,11 +154,21 @@ def dedupe(names: list[str], spec_of) -> list[str]:
 
 def manifest(spec: HarnessSpec, slots: tuple[str, ...] = SLOTS, policy: dict | None = None) -> dict:
     """Everything that defines the harness, minus the model: what the fingerprint hashes."""
-    out = {"policy": policy or {"id": "llm"}}
+    out = {"policy": policy or {"id": "llm", "version": LLM_POLICY_VERSION}}
     for slot in slots:
         opt = OPTIONS[slot][getattr(spec, slot)]
         out[slot] = {"id": opt.id, "version": opt.version, "content": opt.content}
     return out
+
+
+def code_hashes(spec: HarnessSpec, slots: tuple[str, ...] = SLOTS) -> dict:
+    """slot -> hash of the source of the option's implementation (None when it has no code)."""
+    return {slot: code_hash(OPTIONS[slot][getattr(spec, slot)].code) for slot in slots}
+
+
+def changed_parts(old: dict, new: dict) -> list[str]:
+    """The parts of a harness (policy and slots) whose manifest entries differ."""
+    return [k for k in ("policy", *SLOTS) if k in old or k in new if old.get(k) != new.get(k)]
 
 
 def fingerprint(manifest: dict) -> str:

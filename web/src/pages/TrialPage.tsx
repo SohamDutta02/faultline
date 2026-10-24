@@ -25,6 +25,8 @@ function toView(t: TrialDetail): TrialView {
     fault_fired: !!t.fault_fired,
     checks: t.checks,
     world_diff: t.world_diff,
+    feedback: t.feedback,
+    attribution: t.attribution,
   };
 }
 
@@ -42,7 +44,7 @@ export function TrialPage() {
   if (!trial) return <div className="page" />;
 
   const fromPlayground = trial.sweep_label === "playground";
-  const rerun = `/?task=${trial.task_id}&arch=${trial.architecture_id}&fault=${trial.fault_config}&seed=${trial.seed}`;
+  const rerun = `/?task=${trial.task_id}&arch=${encodeURIComponent(trial.architecture_id)}&fault=${trial.fault_config}&seed=${trial.seed}`;
 
   return (
     <div className="page">
@@ -67,7 +69,12 @@ export function TrialPage() {
             task <b>{trial.task_id}</b>
           </span>
           <span>
-            architecture <b>{trial.architecture_id}</b>
+            harness <b>{trial.architecture_id}</b>
+            {trial.harness_fp && (
+              <span className="muted mono" title="harness fingerprint" style={{ marginLeft: 6 }}>
+                {trial.harness_fp}
+              </span>
+            )}
           </span>
           <span>
             faults <b>{trial.fault_config}</b>

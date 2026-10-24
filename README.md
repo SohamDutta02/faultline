@@ -29,14 +29,21 @@ work, snapshots it again, and runs task-specific checks against both snapshots.
 `python -m api` serves everything on http://127.0.0.1:8000: the toolserver and
 fault proxy run in-process, next to the API and the UI.
 
-- **Playground**: pick a task, an architecture and a fault config, run one
-  trial and watch it stream. Every tool call shows its status, latency, the
-  fault the proxy injected and any client retries; the verdict panel shows the
-  checks, the final answer, the cost and a diff of the world.
-- **Sweeps**: launch, follow and stop sweeps, then read them as a pass-rate
-  heatmap by fault config and architecture. Select a cell to list its trials,
-  and open any trial to replay its trace.
-- **Catalog**: the trial pipeline, fault configs, tasks and architectures.
+- **Playground**: pick a task, a harness (a preset, or built slot by slot)
+  and a fault config, run one trial and watch it stream. Every tool call shows
+  its status, latency, the fault the proxy injected, any client retries and
+  which channel made it; the trace also shows the harness state the model was
+  shown, the first answer's grade and each feedback round. The verdict panel
+  shows why a failure happened, what feedback changed, the checks, the final
+  answer, the cost and a diff of the world.
+- **Sweeps**: launch (optionally with an ablation), follow and stop sweeps,
+  then read them as a pass-rate heatmap by fault config and architecture,
+  plus harness spread, controlled comparisons and interactions, failure
+  attribution and feedback outcomes. Select a cell to list its trials, and
+  open any trial to replay its trace.
+- **Compare**: two sweeps cell by cell, with what changed in each harness.
+- **Catalog**: the trial pipeline, fault configs, tasks, the harness
+  subsystems and presets, and a live harness audit.
 
 The scripted architectures work without an API key, so the whole app is
 usable offline; the model-driven ones unlock once `GEMINI_API_KEY` is set.
@@ -333,6 +340,33 @@ Attributions are stored with each trial; `python -m sweep.attribution --label X`
 recomputes them for a sweep (for one recorded before this existed, or after
 the rules change).
 
+## Harness rot
+
+A harness rots like code: prompts get edited, retry policies tuned, checks
+extended, while the results that describe it stay in the database. Every
+trial records the fingerprint of the harness that produced it (and the
+harness itself, once, in a `harness` table), so drift shows up instead of
+silently mixing into the numbers.
+
+- **Resuming** a sweep whose cells came from an older version of their harness
+  is refused, naming the parts that changed. `--rerun-stale` redoes those
+  cells under the current harness, `--allow-mixed` keeps them. The report
+  warns when an architecture's results come from an older harness or mix
+  versions.
+- **`python -m sweep.compare --base before --head after`** is the regression
+  report for a harness change: pass rates on cells paired across the two
+  sweeps (same fault seeds), which parts of each harness changed, and the
+  cells that moved by 10 points or more (`--threshold`).
+- **`python -m harness.audit`** checks for drift: the tool specs the model sees
+  against the toolserver's real routes, prompts that name tools that don't
+  exist, presets that don't resolve. Against the results database (`--db`, or
+  `faultline.db` if it exists) it also finds options whose code changed
+  without a version bump, so their old results still look current, and
+  presets whose latest results come from an older harness. `--calibrate`
+  verifies the verifier: the `checks` must raise no false alarms on the
+  oracle's correct runs of every task and catch four seeded failures. CI runs
+  `python -m harness.audit --calibrate`; `--strict` fails on warnings too.
+
 ## Control results
 
 The control sweep (`--archs oracle oracle_retry oracle_retry+environment=idempotent`,
@@ -386,9 +420,10 @@ toolserver/   seeded warehouse world and six tool endpoints (FastAPI)
 proxy/        fault-injecting reverse proxy, fault classes, configs
 tasks/        task catalog, checks, verifier
 agents/       LLM backend, toolbox clients, agent loop, oracle, architecture registry
-harness/      the five harness subsystems, presets, harness names, fingerprints
+harness/      the five harness subsystems, presets, harness names, fingerprints, deterministic checks, audit
 runner/       single-trial runner, in-process server stack
-sweep/        sweep runner, SQLite store, report, controlled comparisons, failure attribution, trial inspector
+sweep/        sweep runner, SQLite store, report, controlled comparisons, failure attribution, harness
+              versions, sweep comparison, trial inspector
 api/          FastAPI app: catalog, live trial streams (SSE), sweep control
 web/          React + TypeScript UI (Vite)
 tests/        offline pytest suite

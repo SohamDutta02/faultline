@@ -6,11 +6,25 @@ export type Outcome =
   | "fail_crash"
   | "fail_harness";
 
+export type Slot = "instructions" | "tools" | "environment" | "state" | "feedback";
+export type HarnessSpec = Record<Slot, string>;
+
 export interface Architecture {
   id: string;
   description: string;
   needs_llm: boolean;
   retries: boolean;
+  spec: HarnessSpec;
+  /** the slots that can be edited: all five for a model harness, tools and environment for a script */
+  slots: Slot[];
+  fingerprint: string;
+}
+
+export interface HarnessSlot {
+  id: Slot;
+  description: string;
+  baseline: string;
+  options: { id: string; description: string }[];
 }
 
 export interface TaskInfo {
@@ -45,6 +59,7 @@ export interface Meta {
   fault_configs: FaultConfig[];
   fault_types: Record<string, { layer: string; phase: string; description: string }>;
   sweep_defaults: { configs: string[]; archs: string[]; tasks: string[] };
+  harness: { slots: HarnessSlot[]; presets: string[] };
 }
 
 export interface TraceEvent {
@@ -54,6 +69,22 @@ export interface TraceEvent {
   fault_injected: boolean;
   latency_ms: number;
   payload: any;
+  /** which client made a tool call: the agent, feedback through the proxy, or feedback reading ground truth */
+  channel?: "agent" | "review" | "truth" | null;
+}
+
+export interface Attribution {
+  cause: string;
+  subsystem: Slot | null;
+  evidence: string;
+  also: string[];
+  notes: string[];
+}
+
+export interface FeedbackRecord {
+  option: string;
+  first_pass: { outcome: Outcome; reason?: string; tool_calls: number; tokens: number };
+  reviews: { round: number; verdict: string }[];
 }
 
 export interface Check {
@@ -98,6 +129,8 @@ export interface TrialView {
   fault_fired: boolean;
   checks: Check[];
   world_diff: WorldDiff | null;
+  feedback?: FeedbackRecord | null;
+  attribution?: Attribution | null;
 }
 
 export interface TrialRow {
@@ -117,6 +150,7 @@ export interface TrialRow {
   tokens_used: number;
   duration_ms: number | null;
   answer: string | null;
+  attribution?: Attribution | null;
   created_at: string;
 }
 
@@ -125,6 +159,8 @@ export interface TrialDetail extends TrialRow {
   checks: Check[];
   world_diff: WorldDiff | null;
   events: TraceEvent[];
+  feedback: FeedbackRecord | null;
+  harness_fp?: string | null;
 }
 
 export interface JobSummary {
@@ -194,4 +230,104 @@ export interface SweepSummary {
   by_task: (Tally & { arch: string; task: string; config: string })[];
   params: SweepRow["params"];
   live_job: JobSummary | null;
+  feedback: FeedbackStats[];
+  spread: Spread[];
+  comparisons: Comparison[];
+  interactions: Interaction[];
+  attribution: { arch: string; failures: number; causes: Record<string, number>; subsystems: Record<string, number> }[];
+  versions: VersionInfo[];
+}
+
+export interface FeedbackStats {
+  arch: string;
+  n: number;
+  first_pass: number;
+  final: number;
+  fixed: number;
+  broke: number;
+  flagged: number;
+  false_alarms: number;
+  missed: number;
+  extra_tool_calls: number;
+  extra_tokens: number;
+}
+
+export interface Spread {
+  config: string;
+  best: string;
+  best_rate: number;
+  worst: string;
+  worst_rate: number;
+  spread: number;
+  harnesses: number;
+}
+
+export interface Comparison {
+  slot: Slot;
+  from_option: string;
+  to_option: string;
+  from_arch: string;
+  to_arch: string;
+  n: number;
+  delta: number;
+  d_tokens: number;
+  d_tool_calls: number;
+  d_llm_calls: number;
+  by_config: Record<string, { delta: number; n: number }>;
+}
+
+export interface Interaction {
+  slot: Slot;
+  from_option: string;
+  to_option: string;
+  config: string;
+  gap: number;
+  contexts: { from_arch: string; to_arch: string; delta: number }[];
+}
+
+export interface VersionInfo {
+  arch: string;
+  current: string | null;
+  recorded: Record<string, number>;
+  versions: number;
+  stale: number;
+  unknown: number;
+  changed: string[];
+}
+
+export interface AuditFinding {
+  level: "error" | "warning" | "info";
+  check: string;
+  message: string;
+}
+
+export interface CompareResult {
+  base: { label: string; model: string };
+  head: { label: string; model: string };
+  threshold: number;
+  archs: {
+    arch: string;
+    pairs: number;
+    base_rate: number;
+    head_rate: number;
+    delta: number;
+    base_fp: string | null;
+    head_fp: string | null;
+    harness: "same" | "changed" | "unknown";
+    changed: string[];
+  }[];
+  cells: CompareCell[];
+  regressions: CompareCell[];
+  improvements: CompareCell[];
+  only_base: string[];
+  only_head: string[];
+}
+
+export interface CompareCell {
+  arch: string;
+  config: string;
+  pairs: number;
+  base_rate: number;
+  head_rate: number;
+  delta: number;
 }

@@ -21,8 +21,8 @@ OPTIONS = {
     o.id: o
     for o in [
         Option("plain", "calls each tool once and hands every error to the model", _content(Toolbox, None),
-               impl=Toolbox),
+               impl=Toolbox, code=(Toolbox,)),
         Option("retrying", "client-side retries with backoff, the way a production SDK adds them",
-               _content(ResilientToolbox, RETRY_POLICY), impl=ResilientToolbox),
+               _content(ResilientToolbox, RETRY_POLICY), impl=ResilientToolbox, code=(Toolbox, ResilientToolbox)),
     ]
 }

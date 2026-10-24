@@ -48,6 +48,15 @@ create table if not exists trial_event (
 );
 
 create index if not exists idx_event_trial on trial_event(trial_id);
+
+-- every harness version that produced a trial: fingerprint -> what it was
+create table if not exists harness (
+    fingerprint text primary key,
+    arch_id text,
+    manifest text,
+    code text,
+    first_seen text
+);
 """
 
 # columns added after the first sweeps were recorded; old databases get them on connect
@@ -61,6 +70,7 @@ MIGRATIONS = {
         "world_diff": "text",
         "feedback": "text",
         "attribution": "text",
+        "harness_fp": "text",
     },
     "trial_event": {"channel": "text"},
 }
@@ -112,15 +122,20 @@ def finish_sweep(conn, sweep_id: str, status: str = "done"):
     conn.commit()
 
 
-def done_cells(conn, sweep_id: str) -> set:
+def done_cells(conn, sweep_id: str, current: dict[str, str] | None = None) -> set:
     """Cells with a usable result. Harness failures (model API errors) are not
-    the agent's doing, so they stay pending and are re-run on resume."""
+    the agent's doing, so they stay pending and are re-run on resume. With
+    current (arch -> fingerprint), cells recorded by a different version of
+    their harness count as pending too, so they are re-run."""
     rows = conn.execute(
-        """select task_id, architecture_id, fault_config, repeat_idx from trial
+        """select task_id, architecture_id, fault_config, repeat_idx, harness_fp from trial
            where sweep_id = ? and outcome != 'fail_harness'""",
         (sweep_id,),
     ).fetchall()
-    return {(r["task_id"], r["architecture_id"], r["fault_config"], r["repeat_idx"]) for r in rows}
+    return {
+        (r["task_id"], r["architecture_id"], r["fault_config"], r["repeat_idx"]) for r in rows
+        if current is None or r["harness_fp"] is None or current.get(r["architecture_id"]) in (None, r["harness_fp"])
+    }
 
 
 def record(conn, sweep_id: str, fault_config: str, repeat_idx: int, seed: int, result):
@@ -138,8 +153,8 @@ def record(conn, sweep_id: str, fault_config: str, repeat_idx: int, seed: int, r
         """insert into trial
            (id, sweep_id, task_id, architecture_id, fault_config, repeat_idx, seed,
             outcome, reason, fault_fired, tool_calls, tool_errors, retries, llm_calls,
-            tokens_used, duration_ms, answer, checks, world_diff, feedback, attribution, created_at)
-           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            tokens_used, duration_ms, answer, checks, world_diff, feedback, attribution, harness_fp, created_at)
+           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             trial_id, sweep_id, result.task_id, result.architecture_id, fault_config,
             repeat_idx, seed, result.outcome, result.reason, int(result.fault_fired),
@@ -147,7 +162,8 @@ def record(conn, sweep_id: str, fault_config: str, repeat_idx: int, seed: int, r
             result.tokens_used, result.duration_ms, result.answer,
             json.dumps(result.checks), json.dumps(result.world_diff),
             json.dumps(result.feedback) if getattr(result, "feedback", None) else None,
-            json.dumps(result.attribution) if getattr(result, "attribution", None) else None, now(),
+            json.dumps(result.attribution) if getattr(result, "attribution", None) else None,
+            remember_harness(conn, result.architecture_id, getattr(result, "harness", None)), now(),
         ),
     )
     conn.executemany(
@@ -165,6 +181,38 @@ def record(conn, sweep_id: str, fault_config: str, repeat_idx: int, seed: int, r
     )
     conn.commit()
     return trial_id
+
+
+def remember_harness(conn, arch_id: str, record: dict | None) -> str | None:
+    """Store a harness version the first time it is seen; returns its fingerprint."""
+    if not record:
+        return None
+    conn.execute(
+        "insert or ignore into harness (fingerprint, arch_id, manifest, code, first_seen) values (?,?,?,?,?)",
+        (record["fingerprint"], arch_id, json.dumps(record["manifest"], sort_keys=True),
+         json.dumps(record.get("code") or {}, sort_keys=True), now()),
+    )
+    return record["fingerprint"]
+
+
+def get_harness(conn, fp: str) -> dict | None:
+    row = conn.execute("select * from harness where fingerprint = ?", (fp,)).fetchone()
+    if row is None:
+        return None
+    return {**dict(row), "manifest": json.loads(row["manifest"]), "code": json.loads(row["code"] or "{}")}
+
+
+def harness_versions(conn, sweep_id: str) -> dict[str, dict[str | None, int]]:
+    """arch -> {fingerprint (None for trials recorded before fingerprints): graded trials}."""
+    rows = conn.execute(
+        """select architecture_id, harness_fp, count(*) as n from trial
+           where sweep_id = ? and outcome != 'fail_harness' group by architecture_id, harness_fp""",
+        (sweep_id,),
+    ).fetchall()
+    out: dict[str, dict] = {}
+    for r in rows:
+        out.setdefault(r["architecture_id"], {})[r["harness_fp"]] = r["n"]
+    return out
 
 
 def next_repeat(conn, sweep_id: str, task_id: str, architecture_id: str, fault_config: str) -> int:

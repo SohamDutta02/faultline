@@ -12,7 +12,8 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Str
 from pydantic import BaseModel, Field
 
 import settings
-from agents.llm import Backend, default_backend
+from agents import backends
+from agents.llm import Backend, LLMError, default_backend
 import harness
 from agents.registry import ARCHITECTURES, BadHarness, ablation, resolve
 from proxy import config as fault_config
@@ -39,6 +40,8 @@ class TrialRequest(BaseModel):
     fault_config: str = "none"
     seed: int | None = None
     max_steps: int = Field(12, ge=1, le=50)
+    # a model id (its prefix picks the provider); empty uses the server's default
+    model: str | None = None
 
 
 class SweepRequest(BaseModel):
@@ -53,6 +56,7 @@ class SweepRequest(BaseModel):
     ablate: str | None = None
     # resuming a sweep whose cells came from older harness versions: refuse, rerun them, or mix
     on_stale: str = Field("refuse", pattern="^(refuse|rerun|mix)$")
+    model: str | None = None
 
 
 def create_app(
@@ -60,7 +64,7 @@ def create_app(
     toolserver_url: str | None = None,
     proxy_url: str | None = None,
     serve_stack: bool = True,
-    backend_factory: Callable[[], Backend] | None = None,
+    backend_factory: Callable[..., Backend] | None = None,
     llm_available: bool | None = None,
     static_dir: Path | None = WEB_DIST,
     login: tuple[str, str] | None = None,
@@ -80,10 +84,14 @@ def create_app(
             "fingerprint": a.fingerprint,
         }
     urls = {"toolserver": toolserver_url or settings.TOOLSERVER_URL, "proxy": proxy_url or settings.PROXY_URL}
-    make_backend = backend_factory or default_backend
+    def make_backend(model: str | None = None) -> Backend:
+        # a test factory takes no arguments; the real one takes the model id
+        if backend_factory is not None:
+            return backend_factory()
+        return default_backend(model or None)
 
-    def has_llm() -> bool:
-        return llm_available if llm_available is not None else bool(settings.gemini_key())
+    def has_llm(model: str | None = None) -> bool:
+        return llm_available if llm_available is not None else backends.available(model or None)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -122,8 +130,9 @@ def create_app(
             })
         configs.sort(key=lambda c: (FAULT_CONFIGS.index(c["name"]) if c["name"] in FAULT_CONFIGS else 99, c["name"]))
         return {
-            "model": settings.MODEL,
+            "model": backends.resolve()[1],
             "llm_available": has_llm(),
+            "providers": backends.describe(),
             "architectures": [arch_info(a.id) for a in ARCHITECTURES.values()],
             "harness": {
                 "slots": [
@@ -218,14 +227,20 @@ def create_app(
 
     # ---- playground trials ---------------------------------------------------
 
-    def check_archs(arch_ids: list[str]):
+    def check_archs(arch_ids: list[str], model: str | None = None):
         for a in arch_ids:
             try:
                 arch = resolve(a)
             except BadHarness as exc:
                 raise HTTPException(400, str(exc))
-            if arch.needs_llm and not has_llm():
-                raise HTTPException(400, f"{a} needs a model; set GEMINI_API_KEY in .env and restart")
+            if arch.needs_llm and not has_llm(model):
+                try:
+                    provider, _ = backends.resolve(model or None)
+                except LLMError as exc:
+                    raise HTTPException(400, str(exc))
+                need = backends.KEY_VARS[provider]
+                raise HTTPException(400, f"{a} needs a model; set {need} in .env and restart"
+                                    + ("" if model or provider != "openai" else ", and FAULTLINE_MODEL"))
 
     def check_configs(names: list[str]):
         unknown = sorted(set(names) - set(fault_config.available()))
@@ -236,7 +251,7 @@ def create_app(
     def start_trial(req: TrialRequest):
         if req.task_id not in BY_ID:
             raise HTTPException(400, f"unknown task {req.task_id}")
-        check_archs([req.architecture_id])
+        check_archs([req.architecture_id], req.model)
         check_configs([req.fault_config])
         params = req.model_dump()
         params["seed"] = req.seed if req.seed is not None else random.randrange(1_000_000)
@@ -244,7 +259,7 @@ def create_app(
         def target(job: Job):
             p = job.params
             arch = resolve(p["architecture_id"])
-            backend = make_backend() if arch.needs_llm else None
+            backend = make_backend(p.get("model")) if arch.needs_llm else None
             set_fault_config(urls["proxy"], p["fault_config"], p["seed"])
             job.emit("start", **p)
             result = run_trial(
@@ -306,7 +321,7 @@ def create_app(
                 raise HTTPException(400, str(exc))
         if not req.archs:
             raise HTTPException(400, "pick at least one architecture, or a harness to ablate")
-        check_archs(req.archs)
+        check_archs(req.archs, req.model)
         with db() as conn:
             existing = store.find_sweep(conn, req.label)
             stale = [s for s in versions.staleness(conn, existing["id"], req.archs) if s["stale"]] if existing else []
@@ -324,7 +339,7 @@ def create_app(
         def target(job: Job):
             p = job.params
             needs_llm = any(resolve(a).needs_llm for a in p["archs"])
-            backend = make_backend() if needs_llm else None
+            backend = make_backend(p.get("model")) if needs_llm else None
             with db() as conn:
                 matrix = {k: p[k] for k in ("archs", "configs", "tasks", "repeats")}
                 model_id = backend.model if backend else "none"

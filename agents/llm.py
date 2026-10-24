@@ -23,6 +23,13 @@ class LLMError(Exception):
     """The model API failed (quota, network, bad request). Not the agent's fault."""
 
 
+class QuotaExhausted(LLMError):
+    """A quota or spend limit that retrying won't fix today: a sweep should pause, not keep going."""
+
+    def __init__(self, message: str):
+        super().__init__(f"quota exhausted: {message}")
+
+
 @dataclass
 class ToolCall:
     name: str
@@ -53,6 +60,9 @@ def tool_payload(body: str) -> dict:
     return payload if isinstance(payload, dict) else {"result": payload}
 
 
+GEMINI_DEFAULT_MODEL = "gemini-2.0-flash"
+
+
 class GeminiBackend:
     MAX_RETRIES = 4
     BASE_DELAY = 8
@@ -67,7 +77,7 @@ class GeminiBackend:
 
         self.types = types
         self.client = genai.Client(api_key=key)
-        self.model = model or settings.MODEL
+        self.model = model or GEMINI_DEFAULT_MODEL
         self.max_tokens = max_tokens
 
     def _tools(self, tools: list[dict]):
@@ -160,7 +170,9 @@ class GeminiBackend:
             except Exception as exc:
                 msg = str(exc)
                 transient = "RESOURCE_EXHAUSTED" in msg or "503" in msg or "UNAVAILABLE" in msg
-                if transient and "PerDay" not in msg and attempt < self.MAX_RETRIES:
+                if "PerDay" in msg:
+                    raise QuotaExhausted(f"{type(exc).__name__}: {msg}") from exc
+                if transient and attempt < self.MAX_RETRIES:
                     time.sleep(self.BASE_DELAY * (2 ** attempt))
                     continue
                 raise LLMError(f"{type(exc).__name__}: {msg}") from exc
@@ -187,11 +199,8 @@ class ScriptedBackend:
         return step(messages) if callable(step) else step
 
 
-_default: Backend | None = None
+def default_backend(model: str | None = None, provider: str | None = None) -> Backend:
+    """The backend for a model id (or the configured default); see agents/backends.py."""
+    from .backends import make_backend
 
-
-def default_backend() -> Backend:
-    global _default
-    if _default is None:
-        _default = GeminiBackend()
-    return _default
+    return make_backend(model, provider)

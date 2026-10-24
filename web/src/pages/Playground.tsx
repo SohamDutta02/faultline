@@ -3,11 +3,12 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { ApiError, api, followJob } from "../api";
 import { FaultChip, OutcomeStatus } from "../components/Badges";
 import { HarnessPicker } from "../components/HarnessPicker";
+import { ModelField } from "../components/ModelField";
 import { Play } from "../components/Icons";
 import { ResultPanel } from "../components/ResultPanel";
 import { Trace } from "../components/Trace";
 import { faultSummary, ms, when } from "../format";
-import { useFetch, useMeta } from "../hooks";
+import { hasModel, useFetch, useMeta } from "../hooks";
 import type { Architecture, JobSummary, TraceEvent, TrialRow, TrialView } from "../types";
 
 interface RunInfo {
@@ -25,17 +26,19 @@ export function Playground() {
 
   const presetAvailable = (id: string) => {
     const a = meta.architectures.find((x) => x.id === id);
-    return !!a && (!a.needs_llm || meta.llm_available);
+    return !!a && (!a.needs_llm || hasModel(meta));
   };
   const firstArch = meta.architectures.find((a) => presetAvailable(a.id))?.id ?? "oracle";
 
   const [taskId, setTaskId] = useState(params.get("task") ?? "t6_stock_fallback");
   const [archId, setArchId] = useState(params.get("arch") ?? firstArch);
   const archInfo = useFetch<Architecture>(`/api/architectures/${encodeURIComponent(archId)}`);
+  const anyModel = hasModel(meta);
   const archAvailable = (id: string) =>
-    id === archId && !!archInfo.data && (!archInfo.data.needs_llm || meta.llm_available);
+    id === archId && !!archInfo.data && (!archInfo.data.needs_llm || anyModel);
   const [configName, setConfigName] = useState(params.get("fault") ?? "stale_data");
   const [seed, setSeed] = useState(params.get("seed") ?? "");
+  const [model, setModel] = useState(params.get("model") ?? "");
 
   const [run, setRun] = useState<RunInfo | null>(null);
   const [events, setEvents] = useState<TraceEvent[]>([]);
@@ -96,6 +99,7 @@ export function Playground() {
         architecture_id: archId,
         fault_config: configName,
         seed: seed.trim() === "" ? null : Number(seed),
+        model: archInfo.data?.needs_llm && model.trim() ? model.trim() : null,
       });
       navigate(`/?job=${job.id}`, { replace: true });
     } catch (e) {
@@ -142,6 +146,7 @@ export function Playground() {
               <p className="secondary" style={{ fontSize: 12 }}>
                 The seed fixes which calls the proxy faults. Leave it empty for a new schedule each run.
               </p>
+              {archInfo.data?.needs_llm && <ModelField value={model} onChange={setModel} disabled={running} />}
             </div>
           </div>
 
@@ -185,9 +190,10 @@ export function Playground() {
             <div className="panel-body">
               <HarnessPicker value={archId} onChange={setArchId} disabled={running} />
               {archInfo.error && <div className="notice error" style={{ marginTop: 10 }}>{archInfo.error}</div>}
-              {archInfo.data?.needs_llm && !meta.llm_available && (
+              {archInfo.data?.needs_llm && !meta.providers.some((p) => p.available) && (
                 <p className="secondary" style={{ fontSize: 12, marginTop: 8 }}>
-                  This harness drives a model: set GEMINI_API_KEY to run it.
+                  This harness drives a model: set GEMINI_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY or
+                  OPENAI_BASE_URL to run it.
                 </p>
               )}
             </div>

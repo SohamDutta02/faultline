@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { SCRIPTED_SLOTS, SLOTS, baselineSpec, harnessName, optionDescription, presetsFor } from "../harness";
-import { useFetch, useMeta } from "../hooks";
+import { hasModel, useFetch, useMeta } from "../hooks";
 import type { Architecture, HarnessSpec, Slot } from "../types";
 
 /** Pick a preset, or build a harness slot by slot. Reports the harness id. */
@@ -65,7 +65,7 @@ export function HarnessPicker({
       {mode === "presets" ? (
         <div className="options" role="radiogroup" aria-label="harness preset">
           {meta.architectures.map((a) => {
-            const ok = !a.needs_llm || meta.llm_available;
+            const ok = !a.needs_llm || hasModel(meta);
             return (
               <label key={a.id} className={`option${a.id === value ? " selected" : ""}${ok ? "" : " disabled"}`}>
                 <input type="radio" name="arch" checked={a.id === value} disabled={!ok || disabled}
@@ -74,7 +74,7 @@ export function HarnessPicker({
                   <span className="mono">{a.id}</span>
                   <span className="tag">{a.needs_llm ? "model" : "scripted"}</span>
                 </span>
-                <span className="option-desc">{ok ? a.description : "needs GEMINI_API_KEY"}</span>
+                <span className="option-desc">{ok ? a.description : "needs a model key"}</span>
               </label>
             );
           })}
@@ -89,8 +89,8 @@ export function HarnessPicker({
                 const base = presetsFor(meta, s).find((p) => p.id === (s ? "oracle" : "single"))?.spec ?? spec;
                 build(s ? { ...base, tools: spec.tools, environment: spec.environment } : spec, s);
               }}>
-              <option value="model" disabled={!meta.llm_available}>
-                model{meta.llm_available ? "" : " (needs GEMINI_API_KEY)"}
+              <option value="model" disabled={!hasModel(meta)}>
+                model{hasModel(meta) ? "" : " (needs a model key)"}
               </option>
               <option value="script">script: the oracle control</option>
             </select>

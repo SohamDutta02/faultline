@@ -15,7 +15,7 @@ The repository ships a production setup in `compose.yaml`:
   responses, and passes the live event streams through unbuffered.
 
 The password matters: the app has no accounts, and anyone who can open it can
-start trials and sweeps, which spend your Gemini quota when a key is set.
+start trials and sweeps, which spend your model quota when a key is set.
 
 Resource use is small. Running, the two containers take about 80 MB of memory
 together; the image is about 270 MB. Building the image on the server needs a
@@ -45,8 +45,9 @@ few hundred MB more for a minute.
    ```
 
    In `.env`, set `DOMAIN`, `BASIC_AUTH_USER`, and `BASIC_AUTH_HASH` (paste the
-   hash inside single quotes; it contains `$` signs). Add `GEMINI_API_KEY` to
-   enable the model-driven architectures.
+   hash inside single quotes; it contains `$` signs). Add a model key
+   (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY`/`OPENAI_BASE_URL`)
+   to enable the model-driven harnesses.
 
    If the repository is private, clone it with a GitHub personal access token
    or a deploy key instead.
@@ -95,5 +96,6 @@ to a real domain before sharing the link.
 - **The trace doesn't update live**: something between the browser and Caddy
   is buffering responses (for example a CDN or proxy in front of the domain).
   Turn it off for this name; Caddy itself streams events unbuffered.
-- **"model not configured" in the header**: `GEMINI_API_KEY` is empty in
-  `.env`; set it and run `docker compose up -d`.
+- **"model not configured" in the header**: no model key is set in `.env`
+  (or only `OPENAI_BASE_URL`, with no `FAULTLINE_MODEL`); set one and run
+  `docker compose up -d`.

@@ -122,8 +122,8 @@ def execute(
         note = None
         if result.outcome == "fail_harness":
             harness_streak += 1
-            if "PerDay" in result.reason:
-                note = "daily quota exhausted"
+            if "PerDay" in result.reason or "quota exhausted" in result.reason:
+                note = "model quota exhausted"
             elif harness_streak >= 3:
                 note = "three model API failures in a row"
         else:
@@ -175,6 +175,9 @@ def build_parser():
                          "subsystem HARNESS changes, HARNESS minus each, and HARNESS (e.g. --ablate full)")
     ap.add_argument("--tasks", nargs="*", default=[t.id for t in CATALOG], choices=sorted(BY_ID))
     ap.add_argument("--max-steps", type=int, default=12)
+    ap.add_argument("--model", help="model id; its prefix picks the provider: gemini-*, claude-*, gpt-*/o*, "
+                                    "anything else = an OpenAI-compatible server (default: FAULTLINE_MODEL)")
+    ap.add_argument("--provider", choices=["gemini", "anthropic", "openai"], help="override the provider guess")
     stale = ap.add_mutually_exclusive_group()
     stale.add_argument("--rerun-stale", dest="on_stale", action="store_const", const="rerun",
                        help="when resuming, re-run cells recorded by an older version of their harness")
@@ -208,7 +211,7 @@ def main(argv=None):
     if any(resolve(a).needs_llm for a in args.archs):
         from agents.llm import default_backend
         try:
-            backend = default_backend()
+            backend = default_backend(args.model, args.provider)
         except LLMError as exc:
             raise SystemExit(f"{exc}. To run without a model, use --archs oracle")
     model_id = backend.model if backend else "none"

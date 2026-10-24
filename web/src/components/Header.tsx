@@ -39,7 +39,7 @@ export function Header() {
       </nav>
       <div className="topbar-right">
         <RunningJob />
-        <span title={meta.llm_available ? "model used by the LLM architectures" : "set GEMINI_API_KEY in .env and restart"}>
+        <span title={meta.llm_available ? "default model for the model-driven harnesses" : "set a model key in .env and restart"}>
           model <span className="mono">{meta.llm_available ? meta.model : "not configured"}</span>
         </span>
         <select

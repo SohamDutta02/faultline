@@ -41,6 +41,8 @@ class TrialResult:
     attribution: dict | None = None
     # the harness that produced it: {"fingerprint", "manifest", "code"}
     harness: dict | None = None
+    # the model that drove it (None for the scripted controls)
+    model: str | None = None
 
 
 def prepare_world(admin: httpx.Client, task: Task) -> dict:
@@ -127,6 +129,7 @@ def run_trial(
         world_diff=world_diff(before, after),
         feedback=feedback,
         harness=arch.record(),
+        model=getattr(backend, "model", None) if arch.needs_llm else None,
     )
     result.attribution = attribute(asdict(result))
     return result
@@ -147,12 +150,14 @@ def main():
                     help="a harness preset or edit, e.g. single+tools=retrying")
     ap.add_argument("--tasks", nargs="*", default=[t.id for t in CATALOG], choices=sorted(BY_ID))
     ap.add_argument("--pace", type=float, default=0.0, help="seconds to sleep between LLM trials")
+    ap.add_argument("--model", help="model id; its prefix picks the provider (default: FAULTLINE_MODEL)")
+    ap.add_argument("--provider", choices=["gemini", "anthropic", "openai"], help="override the provider guess")
     args = ap.parse_args()
 
     backend = None
     if resolve(args.arch).needs_llm:
         from agents.llm import default_backend
-        backend = default_backend()
+        backend = default_backend(args.model, args.provider)
 
     for i, tid in enumerate(args.tasks):
         if i and backend is not None:

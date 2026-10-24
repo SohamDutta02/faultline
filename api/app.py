@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 import settings
 from agents.llm import Backend, default_backend
 import harness
-from agents.registry import ARCHITECTURES, BadHarness, resolve
+from agents.registry import ARCHITECTURES, BadHarness, ablation, resolve
 from proxy import config as fault_config
 from proxy.faults import REGISTRY
 from runner.stack import local_stack
@@ -41,12 +41,14 @@ class TrialRequest(BaseModel):
 
 class SweepRequest(BaseModel):
     label: str
-    archs: list[str] = Field(min_length=1)
+    archs: list[str] = Field(default_factory=list)
     configs: list[str] = Field(min_length=1)
     tasks: list[str] = Field(min_length=1)
     repeats: int = Field(3, ge=1, le=20)
     pace: float = Field(15.0, ge=0, le=300)
     max_steps: int = Field(12, ge=1, le=50)
+    # adds the controlled-variable set around this harness to archs
+    ablate: str | None = None
 
 
 def create_app(
@@ -142,6 +144,13 @@ def create_app(
             },
             "sweep_defaults": {"configs": FAULT_CONFIGS, "archs": LLM_ARCHITECTURES, "tasks": [t.id for t in CATALOG]},
         }
+
+    @app.get("/api/ablation/{arch_id}")
+    def describe_ablation(arch_id: str):
+        try:
+            return [arch_info(a) for a in ablation(arch_id)]
+        except BadHarness as exc:
+            raise HTTPException(400, str(exc))
 
     @app.get("/api/architectures/{arch_id}")
     def describe_architecture(arch_id: str):
@@ -286,6 +295,13 @@ def create_app(
     def start_sweep(req: SweepRequest):
         if not LABEL.match(req.label) or req.label == PLAYGROUND:
             raise HTTPException(400, "label must be 1-64 letters, digits, '.', '_' or '-', and not 'playground'")
+        if req.ablate:
+            try:
+                req.archs = list(dict.fromkeys(req.archs + ablation(req.ablate)))
+            except BadHarness as exc:
+                raise HTTPException(400, str(exc))
+        if not req.archs:
+            raise HTTPException(400, "pick at least one architecture, or a harness to ablate")
         check_archs(req.archs)
         check_configs(req.configs)
         unknown = sorted(set(req.tasks) - set(BY_ID))

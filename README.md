@@ -100,6 +100,10 @@ The default sweep is 6 tasks x 3 LLM architectures x 7 fault configs x 3
 repeats = 378 trials, with `--pace 15` seconds between LLM trials for free-tier
 rate limits. Narrow it with `--tasks`, `--archs`, `--configs`, `--repeats`.
 
+`--ablate HARNESS` adds a controlled-variable set around a harness (see
+[Ablations and attribution](#ablations-and-attribution)); `--ablate full` is 12
+harnesses, so narrow the rest of the matrix to keep it affordable.
+
 Sweeps are resumable: rerun with the same `--label` and only missing cells run.
 Cells run repeat-major, so a sweep stopped halfway has every cell at the same
 depth. Model API failures (quota, network) are recorded as `fail_harness`,
@@ -172,6 +176,8 @@ Presets name common harnesses:
 | `single` | the baseline: one tool-calling loop, no safety nets |
 | `retry` | `single+tools=retrying` |
 | `critic` | `single+feedback=critic` |
+| `checks` | `single+feedback=checks` |
+| `full` | every subsystem at its strongest deployable option: `fault_aware`, `retrying`, `idempotent`, `ledger`, `checks` |
 | `oracle` | no model: a scripted per-task policy with no retries; the control column, and lets the pipeline run without a key |
 | `oracle_retry` | the oracle on the retrying client: what client retries alone buy, with no model involved |
 
@@ -254,12 +260,78 @@ review cost.
 - **feedback: first answer vs final** for harnesses with feedback: first-pass
   and final pass rates, answers fixed and broken, flags, false alarms, misses,
   and the extra tool calls and tokens the review cost;
+- **harness spread**: the best and the worst model harness per fault config;
+- **controlled comparisons**: every pair of harnesses that differ in exactly
+  one subsystem, with the pass-rate change, the cost change and pass-rate
+  points per 1k extra tokens, by fault config, plus interaction warnings;
+- **failure attribution**: each failure's cause, and the share of failures
+  each subsystem should have prevented;
 - with `--by-task`, a task x config grid per architecture.
 
 `python -m sweep.trials` lists trials by config, arch, task or outcome, and
 `--trial <id>` replays one trial's event log: model turns, tool calls (with
 their channel when it isn't the agent's), injected faults (`F`), harness state
 updates, the first-pass checkpoint and feedback verdicts.
+
+## Ablations and attribution
+
+If it isn't model weights, it's harness: at a fixed model, the **harness
+spread** section shows how far apart the best and worst harness land under
+each fault.
+
+Every pair of harnesses in a sweep that differ in exactly one subsystem is an
+exclusion test for that subsystem. Because every harness in a cell faces the
+same fault schedule, the report pairs their trials cell by cell. `--ablate
+HARNESS` builds the pairs on purpose, in two contexts:
+
+```bash
+python -m sweep.run --label abl --ablate full --configs none timeout stale_data partial_write --serve
+# single, single+<each subsystem full changes>        add-one: what it adds to the baseline
+# full-<each subsystem>, full                         leave-one-out: what full loses without it
+```
+
+Names that spell the same harness are kept once, so `--ablate` on a harness
+that changes two subsystems needs only four harnesses.
+
+When the same change (say tools: plain -> retrying) moves the pass rate by
+very different amounts in different contexts (10 points or more, overall or
+under one fault), the report flags an **interaction**: the subsystem's value
+depends on the rest of the harness, and neither ablation number is its value
+on its own. The scripted controls show one with no model involved
+(`--ablate oracle_retry+environment=idempotent`, 3 repeats):
+
+| change | context | pass, all faults | under timeout |
+|---|---|---:|---:|
+| environment: bare -> idempotent | `oracle` (no retries) | +0 | +0 |
+| environment: bare -> idempotent | `oracle_retry` | +2 | +11 |
+| tools: plain -> retrying | bare environment | +15 | +28 |
+| tools: plain -> retrying | idempotent environment | +17 | +39 |
+
+Idempotent writes are worth nothing to a client that never retries, and the
+retrying client is worth more in an environment where writes are safe to
+repeat. An add-one ablation from the baseline would call the environment
+useless.
+
+Ablation says how much; it doesn't say where the remaining failures come
+from. Each failed trial gets an **attribution** from its trace, world diff
+and feedback checkpoint: a cause, the subsystem whose job it was to prevent
+it, and the evidence.
+
+| cause | subsystem | what happened |
+|---|---|---|
+| `crash` | | the harness raised: a bug |
+| `feedback_broke_it` | feedback | the first answer passed; after review it didn't |
+| `loop` | state | step budget exhausted |
+| `duplicate_write` | state | a write errored but went through, then was repeated (instructions if there was no error) |
+| `lost_write` | tools | a write errored and never went through |
+| `trusted_bad_data` | feedback | a read was altered and nothing caught it |
+| `gave_up_on_errors` | tools | transport or schema errors that were never recovered |
+| `misread_write` | state | a write reported failure but went through, and the agent acted on the failure |
+| `reasoning_error` | instructions | wrong with no unrecovered fault (or the model's limit) |
+
+Attributions are stored with each trial; `python -m sweep.attribution --label X`
+recomputes them for a sweep (for one recorded before this existed, or after
+the rules change).
 
 ## Control results
 
@@ -316,7 +388,7 @@ tasks/        task catalog, checks, verifier
 agents/       LLM backend, toolbox clients, agent loop, oracle, architecture registry
 harness/      the five harness subsystems, presets, harness names, fingerprints
 runner/       single-trial runner, in-process server stack
-sweep/        sweep runner, SQLite store, report, trial inspector
+sweep/        sweep runner, SQLite store, report, controlled comparisons, failure attribution, trial inspector
 api/          FastAPI app: catalog, live trial streams (SSE), sweep control
 web/          React + TypeScript UI (Vite)
 tests/        offline pytest suite

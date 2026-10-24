@@ -62,6 +62,14 @@ PRESETS = {
         Preset("retry", BASELINE.edit(tools="retrying"),
                "single + client-side retries for transport and schema faults"),
         Preset("critic", BASELINE.edit(feedback="critic"), "single + read-only reviewer that can send the work back"),
+        Preset("checks", BASELINE.edit(feedback="checks"), "single + deterministic verification, no second model"),
+        Preset(
+            "full",
+            HarnessSpec(instructions="fault_aware", tools="retrying", environment="idempotent", state="ledger",
+                        feedback="checks"),
+            "every subsystem at its strongest deployable option: fault-aware prompt, retrying client, "
+            "idempotent writes, ledger, checks",
+        ),
     ]
 }
 
@@ -108,6 +116,40 @@ def name_of(spec: HarnessSpec, base: str = "single") -> str:
         if p.spec == spec:
             return p.id
     return base + "".join(f"+{s}={getattr(spec, s)}" for s in spec.differs(PRESETS[base].spec))
+
+
+def ablation(name: str, base: str = "single") -> list[str]:
+    """Controlled-variable harnesses around `name`: the base, the base plus each
+    subsystem `name` changes (add-one), `name` minus each of them (leave-one-out),
+    and `name` itself. Every neighbour differs from another in one subsystem.
+    Names that spell the same harness are kept once (the first spelling)."""
+    head, edits = split(name)
+    spec = apply_edits(PRESETS[head].spec, edits) if head in PRESETS else None
+    if spec is None:
+        raise BadHarness(f"unknown harness preset {head!r}")
+    base_spec = parse(base)
+    if base_spec != BASELINE:
+        raise BadHarness("an ablation's base must be the baseline harness")
+    changed = spec.differs(base_spec)
+    if not changed:
+        raise BadHarness(f"{name} is the baseline; nothing to ablate")
+    names = [base] + [f"{base}+{s}={getattr(spec, s)}" for s in changed] + [f"{name}-{s}" for s in changed] + [name]
+    return dedupe(names, parse)
+
+
+def dedupe(names: list[str], spec_of) -> list[str]:
+    """Drop names whose harness an earlier name already spells, except the last
+    one: the harness being ablated keeps the name it was asked for."""
+    seen, out = {}, []
+    for i, n in enumerate(names):
+        spec = spec_of(n)
+        if spec in seen and i != len(names) - 1:
+            continue
+        if spec in seen:
+            out.remove(seen[spec])
+        seen[spec] = n
+        out.append(n)
+    return out
 
 
 def manifest(spec: HarnessSpec, slots: tuple[str, ...] = SLOTS, policy: dict | None = None) -> dict:

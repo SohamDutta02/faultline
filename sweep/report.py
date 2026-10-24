@@ -5,7 +5,7 @@ from pathlib import Path
 
 from agents.registry import ARCHITECTURES
 
-from . import store
+from . import analysis, attribution, store
 from .run import FAULT_CONFIGS
 
 OUTCOMES = ["pass", "fail_wrong_answer", "fail_no_answer", "fail_loop", "fail_crash"]
@@ -56,7 +56,7 @@ def summarize(conn, label: str) -> dict | None:
     if not sweep:
         return None
     trials = conn.execute("select * from trial where sweep_id = ?", (sweep["id"],)).fetchall()
-    graded = [t for t in trials if t["outcome"] != "fail_harness"]
+    graded = [dict(t) for t in trials if t["outcome"] != "fail_harness"]
 
     archs = _order([t["architecture_id"] for t in graded], list(ARCHITECTURES))
     configs = _order([t["fault_config"] for t in graded], FAULT_CONFIGS)
@@ -77,6 +77,8 @@ def summarize(conn, label: str) -> dict | None:
 
     per_arch = {a: [t for t in graded if t["architecture_id"] == a] for a in archs}
     per_cfg = {c: [t for t in graded if t["fault_config"] == c] for c in configs}
+    cells = [{"config": c, "arch": a, **tally(groups[(c, a)])} for c in configs for a in archs]
+    comparisons = analysis.comparisons(graded, configs)
 
     return {
         "label": label,
@@ -89,7 +91,7 @@ def summarize(conn, label: str) -> dict | None:
         "archs": archs,
         "configs": configs,
         "tasks": tasks,
-        "cells": [{"config": c, "arch": a, **tally(groups[(c, a)])} for c in configs for a in archs],
+        "cells": cells,
         "fired": [
             {"config": c, "fired": sum(t["fault_fired"] for t in per_cfg[c]), "n": len(per_cfg[c])}
             for c in configs
@@ -103,6 +105,10 @@ def summarize(conn, label: str) -> dict | None:
         "feedback": [
             {"arch": a, **stats} for a in archs if (stats := feedback_stats(per_arch[a]))["n"]
         ],
+        "spread": analysis.spread(cells, configs),
+        "comparisons": comparisons,
+        "interactions": analysis.interactions(comparisons),
+        "attribution": [{"arch": a, **attribution.summarize(per_arch[a])} for a in archs],
     }
 
 
@@ -158,6 +164,31 @@ def build(conn, label: str, by_task: bool = False, markdown: bool = False) -> st
             rows.append(row)
         out += ["", f"{h}Change vs no-fault baseline (percentage points)", render(["config"] + archs, rows, markdown)]
 
+    if s["spread"]:
+        rows = [[r["config"], r["best"], f"{r['best_rate']:.0f}%", r["worst"], f"{r['worst_rate']:.0f}%",
+                 f"{r['spread']:.0f}"] for r in s["spread"]]
+        out += ["", f"{h}Harness spread: best vs worst harness on the same model",
+                render(["config", "best", "", "worst", "", "spread (pp)"], rows, markdown)]
+
+    if s["comparisons"]:
+        rows = []
+        for i, r in enumerate(s["comparisons"], 1):
+            per_1k = f"{r['delta'] / (r['d_tokens'] / 1000):+.1f}" if r["d_tokens"] > 50 else "-"
+            rows.append([f"#{i}", r["slot"], f"{r['from_option']} -> {r['to_option']}",
+                         f"{r['from_arch']} -> {r['to_arch']}", r["n"], f"{r['delta']:+.0f}",
+                         f"{r['d_tokens']:+.0f}", f"{r['d_tool_calls']:+.1f}", per_1k])
+        out += ["", f"{h}Controlled comparisons: harnesses that differ in one subsystem, paired by cell",
+                render(["", "subsystem", "change", "from -> to", "pairs", "pass (pp)", "tokens", "tool calls",
+                        "pp per 1k tokens"], rows, markdown)]
+        cfg_rows = [[f"#{i}"] + [f"{r['by_config'][c]['delta']:+.0f}" if c in r["by_config"] else "-" for c in cfgs]
+                    for i, r in enumerate(s["comparisons"], 1)]
+        out += ["", f"{h}Controlled comparisons by fault config (pp)", render([""] + cfgs, cfg_rows, markdown)]
+        for x in s["interactions"]:
+            ctx = "; ".join(f"{c['delta']:+.0f}pp from {c['from_arch']} to {c['to_arch']}" for c in x["contexts"])
+            where = "overall" if x["config"] == "all" else f"under {x['config']}"
+            out.append(f"interaction {where}: {x['slot']} {x['from_option']} -> {x['to_option']} depends on the rest "
+                       f"of the harness ({ctx}). Its effect is not one number.")
+
     fired_rows = [[f["config"], f"{100 * f['fired'] / f['n']:.0f}%", f["n"]] for f in s["fired"]]
     out += ["", f"{h}Trials where the fault fired", render(["config", "fired", "n"], fired_rows, markdown)]
     silent = [f["config"] for f in s["fired"] if f["config"] != "none" and f["fired"] == 0]
@@ -182,6 +213,17 @@ def build(conn, label: str, by_task: bool = False, markdown: bool = False) -> st
         f"{h}Mean cost per trial",
         render(["arch", "tool calls", "tool errors", "retries", "llm calls", "tokens", "seconds"], cost_rows, markdown),
     ]
+
+    attributed = [a for a in s["attribution"] if a["failures"]]
+    if attributed:
+        causes = [c for c in attribution.CAUSES if any(a["causes"].get(c) for a in attributed)]
+        rows = [[a["arch"], a["failures"]] + [a["causes"].get(c, 0) for c in causes] for a in attributed]
+        out += ["", f"{h}Failure attribution: cause", render(["arch", "failures"] + causes, rows, markdown)]
+        subs = [x for x in attribution.SUBSYSTEMS + ["none"] if any(a["subsystems"].get(x) for a in attributed)]
+        rows = [[a["arch"]] + [f"{100 * a['subsystems'].get(x, 0) / a['failures']:.0f}%" for x in subs]
+                for a in attributed]
+        out += ["", f"{h}Failure attribution: subsystem that should have prevented it (share of failures)",
+                render(["arch"] + subs, rows, markdown)]
 
     if s["feedback"]:
         def pct(k, f):

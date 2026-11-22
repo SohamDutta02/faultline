@@ -35,6 +35,8 @@ class TrialResult:
     events: list
     checks: list = field(default_factory=list)
     world_diff: dict = field(default_factory=dict)
+    # what the answer claimed vs what the checks found (tasks/report.py); None without an answer
+    report: str | None = None
     # for harnesses with feedback: {"option", "first_pass": checkpoint, "reviews": [...]}
     feedback: dict | None = None
     # for failed trials: {"cause", "subsystem", "evidence", "also", "notes"} (sweep/attribution.py)
@@ -75,7 +77,8 @@ def run_trial(
 
         def grade(answer):
             v = verify(task, before, admin.get("/_admin/state").json(), answer)
-            return {"outcome": v.outcome.value, "reason": v.reason}
+            return {"outcome": v.outcome.value, "reason": v.reason, "report": v.report,
+                    "answer": answer[:1000] if isinstance(answer, str) else answer}
 
         toolbox = arch.make_toolbox(proxy_url, on_event=on_event)
         ctx = AgentContext(
@@ -127,6 +130,7 @@ def run_trial(
         events=[asdict(e) for e in tb.events],
         checks=[asdict(c) for c in verdict.checks],
         world_diff=world_diff(before, after),
+        report=verdict.report,
         feedback=feedback,
         harness=arch.record(),
         model=getattr(backend, "model", None) if arch.needs_llm else None,
@@ -163,7 +167,8 @@ def main():
         if i and backend is not None:
             time.sleep(args.pace)
         r = run_trial(BY_ID[tid], args.arch, backend)
-        print(f"{r.task_id:20} {r.outcome:18} calls={r.tool_calls} tokens={r.tokens_used} {r.reason}")
+        print(f"{r.task_id:20} {r.outcome:18} report={r.report or '-':13} calls={r.tool_calls} "
+              f"tokens={r.tokens_used} {r.reason}")
 
 
 if __name__ == "__main__":

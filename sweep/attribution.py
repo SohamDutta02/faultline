@@ -11,6 +11,8 @@ Causes, in the order they're tested:
   crash               the harness raised                         (no subsystem: a bug)
   feedback_broke_it   the first answer passed, the final didn't  feedback
   loop                step budget exhausted                      state
+  misreported         the work was done; the answer says it      state (after a write error)
+                      failed                                     or instructions (no error)
   duplicate_write     a write went through more than once        state (after an ambiguous error)
                                                                  or instructions (no error)
   lost_write          a write errored and never went through     tools
@@ -33,7 +35,7 @@ from . import store
 
 SEMANTIC = {"stale_data", "plausible_wrong"}
 TRANSPORT = {"rate_limit", "timeout", "malformed_json"}
-CAUSES = ["crash", "feedback_broke_it", "loop", "duplicate_write", "lost_write", "trusted_bad_data",
+CAUSES = ["crash", "feedback_broke_it", "loop", "misreported", "duplicate_write", "lost_write", "trusted_bad_data",
           "gave_up_on_errors", "misread_write", "reasoning_error", "unattributed"]
 SUBSYSTEMS = ["instructions", "tools", "environment", "state", "feedback"]
 
@@ -84,6 +86,17 @@ def attribute(trial: dict) -> dict | None:
         return done("loop", "state", f"step budget exhausted ({reason})", ["instructions"])
 
     calls = agent_calls(events)
+    if outcome == "fail_misreport":
+        # the world is right, so nothing below applies: the report is what went wrong
+        # writes that errored and were never repeated successfully: the world says they landed
+        errored = [c for c in calls if c.tool in WRITES and c.failed
+                   and not any(o.ok and o.tool == c.tool and o.args == c.args for o in calls)]
+        if errored:
+            c = errored[0]
+            return done("misreported", "state",
+                        f"{_fmt(c.tool, c.args)} returned {c.status or 'no response'} but went through; {reason}",
+                        ["feedback"])
+        return done("misreported", "instructions", f"no write errored, yet {reason}", ["model"])
     agent_results = [e for e in events
                      if _get(e, "kind") == "tool_result" and (_get(e, "channel") or "agent") == "agent"]
     fired = [(_get(e, "tool_name"), (_get(e, "payload") or {}).get("fault"), e) for e in agent_results

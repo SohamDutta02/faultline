@@ -1,6 +1,8 @@
 import argparse
 import json
 
+from tasks.report import REPORTS
+
 from . import store
 
 
@@ -58,6 +60,8 @@ def show_trial(conn, prefix: str):
     print(f"trial {t['id']}")
     print(f"  {t['task_id']} / {t['architecture_id']} / {t['fault_config']} / repeat {t['repeat_idx']} (seed {t['seed']})")
     print(f"  outcome {t['outcome']}: {t['reason']}")
+    answered = t["outcome"] in ("pass", "fail_wrong_answer", "fail_misreport")
+    print(f"  report  {t['report'] or ('not graded: python -m sweep.regrade' if answered else '-')}")
     print(f"  answer  {t['answer']!r}")
     print(f"  tool calls {t['tool_calls']}, tool errors {t['tool_errors']}, retries {t['retries']}, "
           f"llm calls {t['llm_calls']}, tokens {t['tokens_used']}")
@@ -81,6 +85,7 @@ def main(argv=None):
     ap.add_argument("--arch", dest="architecture_id")
     ap.add_argument("--task", dest="task_id")
     ap.add_argument("--outcome")
+    ap.add_argument("--report", choices=REPORTS, help="e.g. false_success: wrong world, claimed done")
     ap.add_argument("--limit", type=int, default=50)
     ap.add_argument("--db", default=None)
     args = ap.parse_args(argv)
@@ -89,7 +94,7 @@ def main(argv=None):
     if args.trial:
         show_trial(conn, args.trial)
     elif args.label:
-        filters = {k: getattr(args, k) for k in ("fault_config", "architecture_id", "task_id", "outcome")}
+        filters = {k: getattr(args, k) for k in ("fault_config", "architecture_id", "task_id", "outcome", "report")}
         list_trials(conn, args.label, filters, args.limit)
     else:
         ap.error("pass --label to list trials or --trial to show one")

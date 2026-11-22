@@ -188,11 +188,16 @@ def check_calibration() -> list[Finding]:
             finally:
                 tb.close()
 
-        alarms = 0
+        alarms = misgraded = 0
         for task in CATALOG:
             for via in (ts, px):
                 set_faults([])
                 r, found = problems(task, via=via)
+                if r.report != "accurate":
+                    misgraded += 1
+                    out.append(Finding("error", "report_grading",
+                                       f"the grader misreads the oracle's correct answer {r.answer!r} on {task.id} "
+                                       f"as {r.report} ({r.outcome})"))
                 if r.outcome == "pass" and found:
                     alarms += 1
                     out.append(Finding("error", "verification",
@@ -207,17 +212,28 @@ def check_calibration() -> list[Finding]:
             ("an altered price", "t5_tier_quote", "oracle", [{"type": "plausible_wrong", "target": "get_pricing"}]),
         ]
         caught = 0
+        misreport = None
         for what, task_id, arch, faults in seeded:
             set_faults(faults)
-            _, found = problems(BY_ID[task_id], arch)
+            r, found = problems(BY_ID[task_id], arch)
+            if faults[0]["type"] == "partial_write":
+                misreport = r
             if found:
                 caught += 1
             else:
                 out.append(Finding("error", "verification", f"the checks miss {what} ({task_id})"))
         set_faults([])
+        # the oracle gives up on a write that went through: the grader must count its report as wrong
+        if misreport is not None and misreport.outcome != "fail_misreport":
+            out.append(Finding("error", "report_grading",
+                               f"the oracle reported a committed write as failed ({misreport.answer!r}) and the "
+                               f"grader gave {misreport.outcome} instead of fail_misreport"))
     out.append(Finding("info", "verification",
                        f"{alarms} false alarms on {2 * len(CATALOG)} correct runs; {caught}/{len(seeded)} seeded "
                        "failures caught"))
+    out.append(Finding("info", "report_grading",
+                       f"{misgraded} of {2 * len(CATALOG)} correct answers misread; a committed write reported as "
+                       f"failed is {'graded fail_misreport' if misreport and misreport.outcome == 'fail_misreport' else 'MISSED'}"))
     return out
 
 

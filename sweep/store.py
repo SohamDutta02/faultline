@@ -72,6 +72,8 @@ MIGRATIONS = {
         "attribution": "text",
         "harness_fp": "text",
         "model": "text",
+        # null: graded before reports were (python -m sweep.regrade fills it in)
+        "report": "text",
     },
     "trial_event": {"channel": "text"},
 }
@@ -155,8 +157,8 @@ def record(conn, sweep_id: str, fault_config: str, repeat_idx: int, seed: int, r
            (id, sweep_id, task_id, architecture_id, fault_config, repeat_idx, seed,
             outcome, reason, fault_fired, tool_calls, tool_errors, retries, llm_calls,
             tokens_used, duration_ms, answer, checks, world_diff, feedback, attribution, harness_fp, model,
-            created_at)
-           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            report, created_at)
+           values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             trial_id, sweep_id, result.task_id, result.architecture_id, fault_config,
             repeat_idx, seed, result.outcome, result.reason, int(result.fault_fired),
@@ -166,7 +168,7 @@ def record(conn, sweep_id: str, fault_config: str, repeat_idx: int, seed: int, r
             json.dumps(result.feedback) if getattr(result, "feedback", None) else None,
             json.dumps(result.attribution) if getattr(result, "attribution", None) else None,
             remember_harness(conn, result.architecture_id, getattr(result, "harness", None)),
-            getattr(result, "model", None), now(),
+            getattr(result, "model", None), getattr(result, "report", None), now(),
         ),
     )
     conn.executemany(
@@ -246,7 +248,7 @@ def _with_params(sweep: dict) -> dict:
 
 def list_trials(conn, sweep_id: str, filters: dict | None = None, limit: int = 500) -> list[dict]:
     where, params = ["sweep_id = ?"], [sweep_id]
-    for col in ("fault_config", "architecture_id", "task_id", "outcome"):
+    for col in ("fault_config", "architecture_id", "task_id", "outcome", "report"):
         val = (filters or {}).get(col)
         if val:
             where.append(f"{col} = ?")
@@ -254,7 +256,7 @@ def list_trials(conn, sweep_id: str, filters: dict | None = None, limit: int = 5
     rows = conn.execute(
         f"""select id, task_id, architecture_id, fault_config, repeat_idx, seed, outcome, reason,
                    fault_fired, tool_calls, tool_errors, retries, llm_calls, tokens_used,
-                   duration_ms, answer, attribution, model, created_at
+                   duration_ms, answer, attribution, model, report, created_at
             from trial where {' and '.join(where)}
             order by created_at desc limit ?""",
         params + [limit],

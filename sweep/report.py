@@ -4,11 +4,13 @@ from collections import defaultdict
 from pathlib import Path
 
 from agents.registry import ARCHITECTURES
+from tasks.report import REPORTS
 
 from . import analysis, attribution, store, versions
+from .regrade import ANSWERED
 from .run import FAULT_CONFIGS
 
-OUTCOMES = ["pass", "fail_wrong_answer", "fail_no_answer", "fail_loop", "fail_crash"]
+OUTCOMES = ["pass", "fail_wrong_answer", "fail_misreport", "fail_no_answer", "fail_loop", "fail_crash"]
 COST_FIELDS = ["tool_calls", "tool_errors", "retries", "llm_calls", "tokens_used", "duration_ms"]
 
 
@@ -47,6 +49,20 @@ def feedback_stats(rows) -> dict:
     if s["n"]:
         s["extra_tool_calls"] /= s["n"]
         s["extra_tokens"] /= s["n"]
+    return s
+
+
+def report_stats(rows) -> dict:
+    """What the answers claimed against what the checks found (tasks/report.py).
+
+    wrong: answered trials whose world failed the checks; false_success of
+    those claimed the work was done anyway. ungraded: answered trials recorded
+    before reports were graded (python -m sweep.regrade fills them in)."""
+    answered = [t for t in rows if t["report"]]
+    s = {r: sum(t["report"] == r for t in answered) for r in REPORTS}
+    s["n"] = len(answered)
+    s["wrong"] = sum(t["outcome"] == "fail_wrong_answer" for t in answered)
+    s["ungraded"] = sum(1 for t in rows if not t["report"] and t["outcome"] in ANSWERED)
     return s
 
 
@@ -97,6 +113,7 @@ def summarize(conn, label: str) -> dict | None:
             for c in configs
         ],
         "outcomes": [{"arch": a, **{o: sum(t["outcome"] == o for t in per_arch[a]) for o in OUTCOMES}} for a in archs],
+        "reports": [{"arch": a, **report_stats(per_arch[a])} for a in archs],
         "cost": [{"arch": a, **{f: mean(per_arch[a], f) for f in COST_FIELDS}} for a in archs],
         "by_task": [
             {"arch": a, "task": tid, "config": c, **tally(by_task[(a, tid, c)])}
@@ -204,6 +221,20 @@ def build(conn, label: str, by_task: bool = False, markdown: bool = False) -> st
 
     outcome_rows = [[o["arch"]] + [o[k] for k in OUTCOMES] for o in s["outcomes"]]
     out += ["", f"{h}Outcomes", render(["arch"] + [o.removeprefix("fail_") for o in OUTCOMES], outcome_rows, markdown)]
+
+    reported = [r for r in s["reports"] if r["n"]]
+    if reported:
+        def claimed(r):
+            return f"{100 * r['false_success'] / r['wrong']:.0f}% ({r['wrong']})" if r["wrong"] else "-"
+        rows = [[r["arch"], r["n"], r["accurate"], r["hedged"], r["unclear"], r["false_success"], r["false_failure"],
+                 claimed(r)] for r in reported]
+        out += ["", f"{h}Reports: what the answer claimed vs what the checks found",
+                render(["arch", "answered", "accurate", "hedged", "unclear", "false success", "false failure",
+                        "wrong world, claimed done"], rows, markdown)]
+    ungraded = sum(r["ungraded"] for r in s["reports"])
+    if ungraded:
+        out.append(f"warning: {ungraded} answered trials were graded before reports were, so a misreport among them "
+                   f"still counts as a pass. Run python -m sweep.regrade --label {label}")
 
     cost_rows = [
         [

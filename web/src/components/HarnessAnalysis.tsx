@@ -255,3 +255,77 @@ export function FeedbackPanel({ s }: { s: SweepSummary }) {
     </div>
   );
 }
+
+/** What the answers claimed against what the checks found, per architecture. */
+export function ReportsPanel({ s }: { s: SweepSummary }) {
+  const rows = (s.reports ?? []).filter((r) => r.n > 0);
+  const ungraded = (s.reports ?? []).reduce((sum, r) => sum + r.ungraded, 0);
+  if (!rows.length && !ungraded) return null;
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <span className="label">Reports: what the answer claimed</span>
+        <span className="secondary" style={{ fontSize: 12.5 }}>
+          against what the checks found; hedged and unclear answers are never penalized
+        </span>
+      </div>
+      {ungraded > 0 && (
+        <div className="notice" style={{ margin: 12 }}>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
+            <Alert size={14} /> <b>{ungraded} answered trials were graded before reports were</b>
+          </div>
+          <div style={{ fontSize: 12.5 }}>
+            A misreport among them still counts as a pass. Run{" "}
+            <span className="mono">python -m sweep.regrade --label {s.label}</span>.
+          </div>
+        </div>
+      )}
+      {rows.length > 0 && (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>architecture</th>
+                <th className="r">answered</th>
+                <th className="r">accurate</th>
+                <th className="r">hedged</th>
+                <th className="r">unclear</th>
+                <th className="r" title="the answer says the work was done, but the checks fail">
+                  claimed success
+                </th>
+                <th className="r" title="the work was done, but the answer says it failed (fail_misreport)">
+                  claimed failure
+                </th>
+                <th className="r" title="of answered trials whose world failed the checks, the share that claimed success">
+                  wrong world, claimed done
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.arch}>
+                  <td className="mono" style={{ fontSize: 12 }}>{r.arch}</td>
+                  <td className="r num">{r.n}</td>
+                  <td className="r num">{r.accurate}</td>
+                  <td className="r num">{r.hedged || <span className="muted">0</span>}</td>
+                  <td className="r num">{r.unclear || <span className="muted">0</span>}</td>
+                  <td className="r num">{r.false_success || <span className="muted">0</span>}</td>
+                  <td className="r num">{r.false_failure || <span className="muted">0</span>}</td>
+                  <td className="r num">
+                    {r.wrong ? (
+                      <>
+                        {Math.round((100 * r.false_success) / r.wrong)}% <span className="muted">of {r.wrong}</span>
+                      </>
+                    ) : (
+                      <span className="muted">–</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}

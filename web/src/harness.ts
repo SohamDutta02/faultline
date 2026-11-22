@@ -46,6 +46,7 @@ export const CAUSE_LABEL: Record<string, string> = {
   crash: "crash",
   feedback_broke_it: "feedback broke it",
   loop: "loop",
+  misreported: "misreported",
   duplicate_write: "duplicate write",
   lost_write: "lost write",
   trusted_bad_data: "trusted bad data",

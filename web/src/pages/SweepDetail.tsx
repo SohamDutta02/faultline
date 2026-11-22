@@ -2,7 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import { JobStatus, OutcomeStatus } from "../components/Badges";
-import { AttributionPanel, ComparisonsPanel, FeedbackPanel, SpreadPanel, VersionNotes } from "../components/HarnessAnalysis";
+import {
+  AttributionPanel,
+  ComparisonsPanel,
+  FeedbackPanel,
+  ReportsPanel,
+  SpreadPanel,
+  VersionNotes,
+} from "../components/HarnessAnalysis";
 import { Heatmap, HeatmapLegend } from "../components/Heatmap";
 import { Fault, Stop } from "../components/Icons";
 import { OUTCOME_SHORT, compact, ms, pct, when } from "../format";
@@ -10,7 +17,7 @@ import { CAUSE_LABEL } from "../harness";
 import { useFetch } from "../hooks";
 import type { SweepSummary, Tally, TrialRow } from "../types";
 
-const OUTCOMES = ["pass", "fail_wrong_answer", "fail_no_answer", "fail_loop", "fail_crash"];
+const OUTCOMES = ["pass", "fail_wrong_answer", "fail_misreport", "fail_no_answer", "fail_loop", "fail_crash"];
 
 function Progress({ summary }: { summary: SweepSummary }) {
   const job = summary.live_job;
@@ -79,6 +86,8 @@ export function SweepDetail() {
   if (!s) return <div className="page" />;
 
   const arch = taskArch ?? s.archs[0];
+  // pass, and the failure kinds that happened: six columns don't fit the half-width panel
+  const shownOutcomes = OUTCOMES.filter((o) => o === "pass" || s.outcomes.some((r) => r[o]));
   const rate = (t?: Tally) => (t && t.n ? t.passes / t.n : null);
   const delta = (config: string, a: string) => {
     if (config === "none") return null;
@@ -155,6 +164,7 @@ export function SweepDetail() {
           <ComparisonsPanel s={s} />
           <AttributionPanel s={s} />
           <FeedbackPanel s={s} />
+          <ReportsPanel s={s} />
 
           <div className="grid-2">
             <div className="panel">
@@ -166,7 +176,7 @@ export function SweepDetail() {
                   <thead>
                     <tr>
                       <th>architecture</th>
-                      {OUTCOMES.map((o) => (
+                      {shownOutcomes.map((o) => (
                         <th key={o} className="r">
                           {OUTCOME_SHORT[o]}
                         </th>
@@ -177,7 +187,7 @@ export function SweepDetail() {
                     {s.outcomes.map((o) => (
                       <tr key={o.arch}>
                         <td className="mono">{o.arch}</td>
-                        {OUTCOMES.map((k) => (
+                        {shownOutcomes.map((k) => (
                           <td key={k} className="r num">
                             {o[k] || <span className="muted">0</span>}
                           </td>

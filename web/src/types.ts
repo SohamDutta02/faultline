@@ -1,6 +1,7 @@
 export type Outcome =
   | "pass"
   | "fail_wrong_answer"
+  | "fail_misreport"
   | "fail_no_answer"
   | "fail_loop"
   | "fail_crash"
@@ -91,9 +92,18 @@ export interface Attribution {
   notes: string[];
 }
 
+/** What the answer claimed against what the checks found (tasks/report.py). */
+export type ReportGrade = "accurate" | "false_success" | "false_failure" | "hedged" | "unclear";
+
 export interface FeedbackRecord {
   option: string;
-  first_pass: { outcome: Outcome; reason?: string; tool_calls: number; tokens: number };
+  first_pass: {
+    outcome: Outcome;
+    reason?: string;
+    report?: ReportGrade | null;
+    tool_calls: number;
+    tokens: number;
+  };
   reviews: { round: number; verdict: string }[];
 }
 
@@ -139,6 +149,7 @@ export interface TrialView {
   fault_fired: boolean;
   checks: Check[];
   world_diff: WorldDiff | null;
+  report?: ReportGrade | null;
   feedback?: FeedbackRecord | null;
   attribution?: Attribution | null;
 }
@@ -162,6 +173,7 @@ export interface TrialRow {
   answer: string | null;
   attribution?: Attribution | null;
   model?: string | null;
+  report?: ReportGrade | null;
   created_at: string;
 }
 
@@ -229,6 +241,7 @@ export interface SweepSummary {
   cells: (Tally & { config: string; arch: string })[];
   fired: { config: string; fired: number; n: number }[];
   outcomes: ({ arch: string } & Record<string, number>)[];
+  reports: ReportStats[];
   cost: {
     arch: string;
     tool_calls: number;
@@ -247,6 +260,16 @@ export interface SweepSummary {
   interactions: Interaction[];
   attribution: { arch: string; failures: number; causes: Record<string, number>; subsystems: Record<string, number> }[];
   versions: VersionInfo[];
+}
+
+export interface ReportStats extends Record<ReportGrade, number> {
+  arch: string;
+  /** answered trials with a report */
+  n: number;
+  /** answered trials whose world failed the checks */
+  wrong: number;
+  /** answered trials graded before reports were; python -m sweep.regrade fills them in */
+  ungraded: number;
 }
 
 export interface FeedbackStats {

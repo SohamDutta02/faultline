@@ -1,8 +1,8 @@
 import { Link } from "react-router-dom";
-import { compact, ms } from "../format";
+import { compact, ms, REPORT_HELP } from "../format";
 import { CAUSE_LABEL } from "../harness";
 import type { Attribution, FeedbackRecord, TrialView, WorldDiff } from "../types";
-import { CheckIcon, OutcomeHeadline, OutcomeStatus } from "./Badges";
+import { CheckIcon, OutcomeHeadline, OutcomeStatus, ReportStatus } from "./Badges";
 
 function AttributionView({ a }: { a: Attribution }) {
   return (
@@ -165,6 +165,15 @@ export function ResultPanel({ view, running }: { view: TrialView | null; running
             <p className="secondary" style={{ marginTop: 6, fontSize: 13 }}>
               {view.reason}
             </p>
+          )}
+          {view.report && (
+            <div className="kv" style={{ marginTop: 8, gap: 8, alignItems: "center", fontSize: 13 }}>
+              <span className="secondary">report</span>
+              <ReportStatus report={view.report} />
+              <span className="secondary" style={{ fontSize: 12.5 }}>
+                {REPORT_HELP[view.report]}
+              </span>
+            </div>
           )}
         </div>
 

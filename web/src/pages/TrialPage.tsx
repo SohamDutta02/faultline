@@ -27,6 +27,7 @@ function toView(t: TrialDetail): TrialView {
     world_diff: t.world_diff,
     feedback: t.feedback,
     attribution: t.attribution,
+    report: t.report ?? null,
   };
 }
 

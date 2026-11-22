@@ -3,6 +3,7 @@ from typing import Any
 
 from toolserver.fixtures import TIER_MULTIPLIER
 
+from .report import Report, classify, grade, strip_quoted
 from .spec import CheckResult, Outcome, Task, Verdict
 
 
@@ -18,13 +19,23 @@ def verify(task: Task, before: dict, after: dict, answer: Any, error: str | None
 
     results = [c(before, after, answer) for c in task.checks]
     failed = [r for r in results if not r.passed]
+    outcome, reason, report = judge(task, str(answer), not failed)
     if failed:
-        return Verdict(
-            Outcome.FAIL_WRONG_ANSWER,
-            results,
-            "; ".join(f"{r.name}: {r.detail}" for r in failed),
-        )
-    return Verdict(Outcome.PASS, results, "")
+        reason = "; ".join(f"{r.name}: {r.detail}" for r in failed)
+    return Verdict(outcome, results, reason, report.value)
+
+
+def judge(task: Task, answer: str, checks_pass: bool) -> tuple[Outcome, str, Report]:
+    """The outcome of an answered trial, from whether its checks pass and what
+    its answer claims: (outcome, reason, report). A wrong world stays
+    fail_wrong_answer whatever the answer says; the report records the claim."""
+    claim, evidence = classify(answer, read_only=task.category == "read_only")
+    report = grade(claim, checks_pass)
+    if report is Report.FALSE_FAILURE:
+        return Outcome.FAIL_MISREPORT, f"the task's checks pass, but the answer reports failure ({evidence!r})", report
+    if checks_pass:
+        return Outcome.PASS, "", report
+    return Outcome.FAIL_WRONG_ANSWER, "", report
 
 
 def qty_of(state: dict, sku: str) -> int:
@@ -55,8 +66,9 @@ def as_number(answer: Any) -> float | None:
     if isinstance(answer, (int, float)):
         return float(answer)
     if isinstance(answer, str):
-        # skip digits that belong to identifiers like A-22 or CUST-102
-        m = re.search(r"(?<![\w-])-?\d+(?:\.\d+)?(?![\w-])", answer.replace(",", ""))
+        # skip digits that belong to identifiers like A-22 or CUST-102, and quoted
+        # tool output: a number inside an error body the agent pasted is not its answer
+        m = re.search(r"(?<![\w-])-?\d+(?:\.\d+)?(?![\w-])", strip_quoted(answer).replace(",", ""))
         if m:
             return float(m.group())
     return None

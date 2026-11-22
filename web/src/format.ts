@@ -1,8 +1,9 @@
-import type { Outcome } from "./types";
+import type { Outcome, ReportGrade } from "./types";
 
 export const OUTCOME_LABEL: Record<Outcome, string> = {
   pass: "Pass",
   fail_wrong_answer: "Wrong result",
+  fail_misreport: "Right result, misreported",
   fail_no_answer: "No answer",
   fail_loop: "Step budget exhausted",
   fail_crash: "Crashed",
@@ -12,10 +13,28 @@ export const OUTCOME_LABEL: Record<Outcome, string> = {
 export const OUTCOME_SHORT: Record<string, string> = {
   pass: "pass",
   fail_wrong_answer: "wrong",
+  fail_misreport: "misreport",
   fail_no_answer: "no answer",
   fail_loop: "loop",
   fail_crash: "crash",
   fail_harness: "api error",
+};
+
+export const REPORT_LABEL: Record<ReportGrade, string> = {
+  accurate: "accurate",
+  false_success: "claimed success",
+  false_failure: "claimed failure",
+  hedged: "hedged",
+  unclear: "unclear",
+};
+
+/** What each report means, for titles and the result panel. */
+export const REPORT_HELP: Record<ReportGrade, string> = {
+  accurate: "the answer's claim matches what the checks found",
+  false_success: "the answer says the work was done, but the checks fail",
+  false_failure: "the work was done, but the answer says it failed",
+  hedged: "the answer says it doesn't know whether the work went through",
+  unclear: "the grader couldn't read a confident claim from the answer",
 };
 
 export function pct(passes: number, n: number): string {

@@ -6,6 +6,8 @@ from typing import Any, Callable
 class Outcome(str, Enum):
     PASS = "pass"
     FAIL_WRONG_ANSWER = "fail_wrong_answer"
+    # the world is right, but the answer says the work failed
+    FAIL_MISREPORT = "fail_misreport"
     FAIL_NO_ANSWER = "fail_no_answer"
     FAIL_LOOP = "fail_loop"
     FAIL_CRASH = "fail_crash"
@@ -24,6 +26,8 @@ class Verdict:
     outcome: Outcome
     checks: list[CheckResult] = field(default_factory=list)
     reason: str = ""
+    # what the answer claimed vs what the checks found (tasks/report.py); None without an answer
+    report: str | None = None
 
     @property
     def passed(self) -> bool:

@@ -34,12 +34,13 @@ fault proxy run in-process, next to the API and the UI.
   its status, latency, the fault the proxy injected, any client retries and
   which channel made it; the trace also shows the harness state the model was
   shown, the first answer's grade and each feedback round. The verdict panel
-  shows why a failure happened, what feedback changed, the checks, the final
-  answer, the cost and a diff of the world.
+  shows why a failure happened, whether the answer's report matches the
+  world, what feedback changed, the checks, the final answer, the cost and a
+  diff of the world.
 - **Sweeps**: launch (optionally with an ablation), follow and stop sweeps,
   then read them as a pass-rate heatmap by fault config and architecture,
   plus harness spread, controlled comparisons and interactions, failure
-  attribution and feedback outcomes. Select a cell to list its trials, and
+  attribution, feedback outcomes and reports. Select a cell to list its trials, and
   open any trial to replay its trace.
 - **Compare**: two sweeps cell by cell, with what changed in each harness.
 - **Catalog**: the trial pipeline, fault configs, tasks, the harness
@@ -285,10 +286,41 @@ review cost.
 |---|---|
 | `pass` | every check passed |
 | `fail_wrong_answer` | at least one check failed (wrong number, wrong or duplicate order, world mutated...) |
+| `fail_misreport` | every check passed, but the answer says the work failed |
 | `fail_no_answer` | the agent finished without a final message |
 | `fail_loop` | step budget (`--max-steps`, default 12 per turn) exhausted |
 | `fail_crash` | the architecture raised an exception |
 | `fail_harness` | the model API failed; not counted, re-run on resume |
+
+### Reports
+
+The checks grade the world; the **report** grades what the agent said about
+it. An agent that placed the order and then answers "the order failed" leaves
+the world right and its user wrong: a user who believes it places the order
+again. Every answered trial gets one of:
+
+| report | the answer... | and the checks |
+|---|---|---|
+| `accurate` | says the work was done (or gives the value asked for) | pass |
+| | says it failed or gave up | fail |
+| `false_success` | says the work was done | fail |
+| `false_failure` | says it failed or gave up | pass: the outcome is `fail_misreport` |
+| `hedged` | says it doesn't know whether the work went through | either; not penalized |
+| `unclear` | can't be read with confidence | either; not penalized |
+
+Only `false_failure` changes an outcome; a `false_success` trial was already
+`fail_wrong_answer`, and the report says it also claimed success. The claim is
+read from the plain-text answer by fixed rules in `tasks/report.py`, with no
+model involved. They ignore quoted tool output (`{...}`), so a pasted error
+body that says "may not have completed" isn't read as the agent hedging, and
+they lean towards `unclear` rather than a wrong reading. `tests/test_report.py`
+holds the labelled answers they are checked against, and `python -m
+harness.audit --calibrate` checks that the oracle's correct answers all read as
+accurate.
+
+Sweeps recorded before reports were graded show a warning in the report;
+`python -m sweep.regrade --label X` regrades them from the stored answers,
+without re-running anything.
 
 ## Reading the report
 
@@ -300,6 +332,9 @@ review cost.
   (the targeted tool was never called, or traffic bypassed the proxy);
 - **outcomes** and **mean cost** (tool calls, tool errors, client retries, LLM
   calls, tokens, seconds) per architecture;
+- **reports**: per architecture, how many answers were accurate, hedged,
+  unclear, false successes and false failures, and the share of wrong-world
+  answers that claimed the work was done;
 - **feedback: first answer vs final** for harnesses with feedback: first-pass
   and final pass rates, answers fixed and broken, flags, false alarms, misses,
   and the extra tool calls and tokens the review cost;
@@ -343,16 +378,18 @@ depends on the rest of the harness, and neither ablation number is its value
 on its own. The scripted controls show one with no model involved
 (`--ablate oracle_retry+environment=idempotent`, 3 repeats):
 
-| change | context | pass, all faults | under timeout |
-|---|---|---:|---:|
-| environment: bare -> idempotent | `oracle` (no retries) | +0 | +0 |
-| environment: bare -> idempotent | `oracle_retry` | +2 | +11 |
-| tools: plain -> retrying | bare environment | +15 | +28 |
-| tools: plain -> retrying | idempotent environment | +17 | +39 |
+| change | context | pass, all faults | under timeout | under partial_write |
+|---|---|---:|---:|---:|
+| environment: bare -> idempotent | `oracle` (no retries) | +0 | +0 | +0 |
+| environment: bare -> idempotent | `oracle_retry` | +9 | +11 | +50 |
+| tools: plain -> retrying | bare environment | +15 | +28 | +0 |
+| tools: plain -> retrying | idempotent environment | +24 | +39 | +50 |
 
 Idempotent writes are worth nothing to a client that never retries, and the
 retrying client is worth more in an environment where writes are safe to
-repeat. An add-one ablation from the baseline would call the environment
+repeat. Under partial writes each is worth nothing alone and 50 points
+together: only a client that can resend safely finds out the write went
+through. An add-one ablation from the baseline would call the environment
 useless.
 
 Ablation says how much; it doesn't say where the remaining failures come
@@ -365,6 +402,7 @@ it, and the evidence.
 | `crash` | | the harness raised: a bug |
 | `feedback_broke_it` | feedback | the first answer passed; after review it didn't |
 | `loop` | state | step budget exhausted |
+| `misreported` | state | the work was done, but the answer says it failed after a write error (instructions if no write errored) |
 | `duplicate_write` | state | a write errored but went through, then was repeated (instructions if there was no error) |
 | `lost_write` | tools | a write errored and never went through |
 | `trusted_bad_data` | feedback | a read was altered and nothing caught it |
@@ -418,19 +456,26 @@ and with retries in an environment whose writes are idempotent:
 | malformed_json | 67% | 100% | 100% |
 | stale_data | 67% | 67% | 67% |
 | plausible_wrong | 67% | 67% | 67% |
-| partial_write | 100% | 100% | 100% |
+| partial_write | 50% | 50% | 100% |
 
 Retries recover rate limits and corrupted bodies almost entirely. They recover
 timeouts only on reads: a write that timed out might have committed, so the
 retrying client hands it back instead of risking a duplicate, and those trials
 still fail. Semantic faults are untouched, since a stale or wrong value
-re-reads the same way. Partial writes never hurt a client that doesn't retry
-blindly: that failure mode belongs to agents that do, which is what the model
-architectures are measured on.
+re-reads the same way, and the client reports the wrong value as the answer:
+those are the sweep's `false_success` reports.
+
+A partial write never leaves a wrong world behind a client that doesn't retry
+blindly, but it does leave a wrong report: the write commits, the client sees
+a 500, gives up and says the order failed. Every partial-write trial on the
+three ordering tasks is a `fail_misreport`, with or without client retries,
+since the retrying client won't resend a write that may have gone through.
 
 Making writes idempotent is an environment change, not a client change, and it
-recovers most of the timed-out writes: the retrying client can now resend them
-safely. What's left are calls that timed out on all three attempts.
+fixes both. The retrying client can resend a timed-out or failed write safely:
+it recovers most of the timed-out writes (what's left are calls that timed out
+on all three attempts), and a partial write's resend comes back as a success,
+so the client reports what actually happened.
 
 ## Extending
 
@@ -456,12 +501,12 @@ safely. What's left are calls that timed out on all three attempts.
 ```
 toolserver/   seeded warehouse world and six tool endpoints (FastAPI)
 proxy/        fault-injecting reverse proxy, fault classes, configs
-tasks/        task catalog, checks, verifier
+tasks/        task catalog, checks, verifier, report grading (what the answer claims vs the world)
 agents/       model backends (Gemini, Anthropic, OpenAI-compatible), toolbox clients, agent loop, oracle, architecture registry
 harness/      the five harness subsystems, presets, harness names, fingerprints, deterministic checks, audit
 runner/       single-trial runner, in-process server stack
 sweep/        sweep runner, SQLite store, report, controlled comparisons, failure attribution, harness
-              versions, sweep comparison, trial inspector
+              versions, sweep comparison, trial inspector, regrading
 api/          FastAPI app: catalog, live trial streams (SSE), sweep control
 web/          React + TypeScript UI (Vite)
 tests/        offline pytest suite
@@ -470,8 +515,10 @@ settings.py   URLs, model, API key (from .env)
 
 ## Limitations
 
-- Write tasks are graded on world state. An agent that says "the order failed"
-  after a partial write that actually committed still passes, even though its
-  report was wrong.
+- Reports are read from plain text by fixed rules. An answer they can't read
+  confidently is `unclear` and isn't penalized, so a misreport phrased in a
+  way the rules don't cover gets through as a pass. They read whether the
+  work was done, not the details: "ordered 12" when 7 were ordered isn't
+  caught unless the world is wrong too.
 - One small seeded world. Results say how architectures compare under these
   faults, not how a given agent would do in production.

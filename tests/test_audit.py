@@ -119,8 +119,12 @@ def test_audit_cli_exit_codes(tmp_path, capsys):
 
 def test_calibration_verifies_the_verifier(stack):
     findings = audit.check_calibration()
-    assert [f.level for f in findings] == ["info"]
+    assert [f.level for f in findings] == ["info", "info"]
     assert "0 false alarms on 12 correct runs; 4/4 seeded failures caught" in findings[0].message
+    # and the grader: correct answers read as accurate, a committed write reported as failed caught
+    assert findings[1].check == "report_grading"
+    assert "0 of 12 correct answers misread" in findings[1].message
+    assert "graded fail_misreport" in findings[1].message
 
 
 # ---- comparing sweeps --------------------------------------------------------------

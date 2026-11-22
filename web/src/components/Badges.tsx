@@ -1,10 +1,11 @@
-import { OUTCOME_LABEL, OUTCOME_SHORT } from "../format";
-import type { Outcome } from "../types";
+import { OUTCOME_LABEL, OUTCOME_SHORT, REPORT_HELP, REPORT_LABEL } from "../format";
+import type { Outcome, ReportGrade } from "../types";
 import { Alert, Check, Cross, Fault, Loop, Minus } from "./Icons";
 
 const TONE: Record<Outcome, string> = {
   pass: "good",
   fail_wrong_answer: "critical",
+  fail_misreport: "serious",
   fail_no_answer: "serious",
   fail_loop: "serious",
   fail_crash: "critical",
@@ -35,6 +36,25 @@ export function OutcomeHeadline({ outcome }: { outcome: Outcome }) {
       <OutcomeIcon outcome={outcome} size={18} />
       {OUTCOME_LABEL[outcome]}
     </div>
+  );
+}
+
+const REPORT_TONE: Record<ReportGrade, string> = {
+  accurate: "good",
+  false_success: "critical",
+  false_failure: "serious",
+  hedged: "neutral",
+  unclear: "neutral",
+};
+
+/** The answer's report as icon + text, with what it means on hover. */
+export function ReportStatus({ report }: { report: ReportGrade }) {
+  const bad = report === "false_success" || report === "false_failure";
+  return (
+    <span className={`status ${REPORT_TONE[report]}`} title={REPORT_HELP[report]}>
+      {report === "accurate" ? <Check /> : bad ? <Cross /> : <Minus />}
+      {REPORT_LABEL[report]}
+    </span>
   );
 }
 
